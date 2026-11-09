@@ -28,9 +28,17 @@ async function parseStatement({ buffer, fileName, bank, password }) {
 
   const body = await response.json().catch(() => ({}));
 
+  if (response.status >= 500) {
+    // A bug or crash inside the parser, not a problem with the user's file.
+    logger.error('Parser service error', { status: response.status, parserCode: body.code });
+    throw new AppError('Statement parser failed unexpectedly', 502, 'PARSER_ERROR');
+  }
+
   if (!response.ok) {
     // The parser rejected the file itself (wrong password, unsupported layout, …).
-    throw new AppError(body.error || 'Statement could not be parsed', 422, 'STATEMENT_PARSE_FAILED');
+    // `code` (e.g. WRONG_PASSWORD) is passed on so the UI can suggest the right next step.
+    const message = typeof body.error === 'string' ? body.error : 'Statement could not be parsed';
+    throw new AppError(message, 422, 'STATEMENT_PARSE_FAILED', body.code ? { parserCode: body.code } : undefined);
   }
 
   const parsed = parserResponse.safeParse(body);

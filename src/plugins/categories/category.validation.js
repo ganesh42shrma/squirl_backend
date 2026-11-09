@@ -1,12 +1,12 @@
 const { z } = require('zod');
-const { objectId, idParams } = require('../../core/schemas');
+const { entityId, idParams } = require('../../core/schemas');
 const { CATEGORY_TYPES } = require('./category.model');
 
 const categoryBody = z.object({
   name: z.string().trim().min(1).max(50),
   // Ignored for subcategories: they always take their parent's type.
   type: z.enum(CATEGORY_TYPES).optional(),
-  parent: objectId.nullable().optional(),
+  parent: entityId.nullable().optional(),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Must be a hex color like #ff8800').optional(),
   icon: z.string().max(30).optional(),
 });

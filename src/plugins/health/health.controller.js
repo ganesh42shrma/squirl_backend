@@ -1,12 +1,12 @@
-const mongoose = require('mongoose');
+const { dbStatus } = require('../../config/db');
+const { redisStatus } = require('../../config/redis');
 const { sendSuccess } = require('../../core/response');
-
-const DB_STATES = ['disconnected', 'connected', 'connecting', 'disconnecting'];
 
 function getHealth(req, res) {
   sendSuccess(res, {
     status: 'ok',
-    db: DB_STATES[mongoose.connection.readyState] || 'unknown',
+    db: dbStatus(),
+    sessions: redisStatus(),
     uptimeSeconds: Math.round(process.uptime()),
     timestamp: new Date().toISOString(),
   });

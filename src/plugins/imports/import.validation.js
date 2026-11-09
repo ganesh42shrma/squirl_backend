@@ -1,10 +1,11 @@
 const { z } = require('zod');
 const { idParams, pagination } = require('../../core/schemas');
-const { BANKS } = require('./import.model');
+const { BANKS, AUTO_BANK } = require('./import.model');
 
 const createImport = z.object({
   body: z.object({
-    bank: z.enum(BANKS),
+    // 'auto' lets the parser work out the bank from the statement itself.
+    bank: z.enum([AUTO_BANK, ...BANKS]).default(AUTO_BANK),
     password: z.string().max(100).optional(),
   }),
 });
@@ -15,6 +16,7 @@ const importId = z.object({ params: idParams });
 
 // Shape the Python parser service must return (see README → "Parser service contract").
 const parserResponse = z.object({
+  bank: z.enum(BANKS),
   periodFrom: z.string().nullish(),
   periodTo: z.string().nullish(),
   transactions: z.array(

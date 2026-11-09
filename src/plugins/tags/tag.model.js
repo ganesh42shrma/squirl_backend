@@ -1,18 +1,35 @@
-const mongoose = require('mongoose');
+const { insertRow, newId, nowIso } = require('../../core/sql');
 
 const CUSTOM_GROUP = 'custom';
+const DEFAULT_COLOR = '#9ca3af';
 
-// The tag catalog. Transactions store tag names as plain strings; this adds a group and color to each name.
-const tagSchema = new mongoose.Schema(
-  {
-    name: { type: String, required: true, unique: true, trim: true, lowercase: true, maxlength: 40 },
-    group: { type: String, trim: true, lowercase: true, default: CUSTOM_GROUP },
-    color: { type: String, default: '#9ca3af' },
-  },
-  { timestamps: true },
-);
+// Table: tags, the tag catalog. Transactions store tag names in transaction_tags;
+// this adds a group and colour to each name.
+function toTag(row) {
+  if (!row) return null;
+  return {
+    _id: row.id,
+    name: row.name,
+    group: row.group_name,
+    color: row.color,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
 
-tagSchema.index({ group: 1, name: 1 });
+function insertTag(db, userId, { name, group, color }) {
+  const now = nowIso();
+  const id = newId();
+  insertRow(db, 'tags', {
+    id,
+    user_id: userId,
+    name,
+    group_name: group || CUSTOM_GROUP,
+    color: color || DEFAULT_COLOR,
+    created_at: now,
+    updated_at: now,
+  });
+  return id;
+}
 
-module.exports = mongoose.model('Tag', tagSchema);
-module.exports.CUSTOM_GROUP = CUSTOM_GROUP;
+module.exports = { CUSTOM_GROUP, toTag, insertTag };

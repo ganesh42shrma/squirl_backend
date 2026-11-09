@@ -8,18 +8,30 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "seed": "node src/scripts/seed-defaults.js"
+    "seed": "node src/scripts/seed-defaults.js",
+    "db:key": "node src/scripts/db-key.js",
+    "llm": "sh scripts/llm.sh",
+    "test:family": "node scripts/test-family.js",
+    "test:reset": "node scripts/test-reset.js",
+    "test:dashboard": "node scripts/test-dashboard.js",
+    "test:imports": "node scripts/test-imports.js",
+    "test:transactions": "node scripts/test-transactions.js",
+    "test:ledger-pagination": "node scripts/test-ledger-pagination.js",
+    "test:summary": "node scripts/test-summary.js"
   },
   "engines": {
     "node": ">=22"
   },
   "dependencies": {
+    "better-sqlite3-multiple-ciphers": "^13.0.3",
+    "connect-redis": "^10.0.0",
     "cors": "^2.8.6",
     "dotenv": "^18.0.8",
     "express": "^5.3.0",
+    "express-session": "^1.19.0",
     "helmet": "^8.3.0",
-    "mongoose": "^9.11.2",
     "multer": "^2.4.0",
+    "redis": "^6.3.1",
     "winston": "^3.19.0",
     "zod": "^4.6.7"
   }

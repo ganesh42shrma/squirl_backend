@@ -1,87 +1,102 @@
-const mongoose = require('mongoose');
-const Category = require('./category.model');
-const Transaction = require('../transactions/transaction.model');
+const { getDb } = require('../../config/db');
 const AppError = require('../../core/AppError');
+const { nowIso, updateRow } = require('../../core/sql');
+const { toCategory, insertCategory } = require('./category.model');
 const { buildTree, slugify } = require('./category.helper');
 
+// Every query is scoped to the account: another account's category id simply isn't found.
+const findById = (userId, id) => toCategory(getDb().prepare('SELECT * FROM active_categories WHERE id = ? AND user_id = ?').get(id, userId));
+const hasChildren = (userId, id) => Boolean(getDb().prepare('SELECT 1 FROM active_categories WHERE parent_id = ? AND user_id = ? LIMIT 1').get(id, userId));
+
 // Names are unique among siblings: "Other" can exist under Food and under Shopping, but not twice under Food.
-async function assertNameAvailable(name, parent, excludeId) {
-  const filter = { parent: parent || null, slug: slugify(name) };
-  if (excludeId) filter._id = { $ne: excludeId };
-  if (await Category.exists(filter)) {
-    throw AppError.conflict(`A category named "${name}" already exists here`, 'CATEGORY_EXISTS');
-  }
+function assertNameAvailable(userId, name, parent, excludeId) {
+  const taken = getDb()
+    .prepare("SELECT 1 FROM active_categories WHERE user_id = ? AND ifnull(parent_id, '') = ? AND slug = ? AND id IS NOT ?")
+    .get(userId, parent || '', slugify(name), excludeId ?? null);
+  if (taken) throw AppError.conflict(`A category named "${name}" already exists here`, 'CATEGORY_EXISTS');
 }
 
 // Subcategories are one level deep, so a parent must itself be top-level.
-async function getParent(parentId) {
-  const parent = await Category.findById(parentId).lean();
+function getParent(userId, parentId) {
+  const parent = findById(userId, parentId);
   if (!parent) throw AppError.badRequest('Parent category not found', 'INVALID_PARENT');
   if (parent.parent) throw AppError.badRequest('A subcategory cannot have its own subcategories', 'INVALID_PARENT');
   return parent;
 }
 
-async function listCategories({ type, view }) {
-  const categories = await Category.find(type ? { type } : {}).sort({ name: 1 }).lean();
+async function listCategories(userId, { type, view }) {
+  const rows = type
+    ? getDb().prepare('SELECT * FROM active_categories WHERE user_id = ? AND type = ? ORDER BY name').all(userId, type)
+    : getDb().prepare('SELECT * FROM active_categories WHERE user_id = ? ORDER BY name').all(userId);
+  const categories = rows.map(toCategory);
   return view === 'flat' ? categories : buildTree(categories);
 }
 
 // A category plus its subcategories, so filtering by "Food & Drinks" also matches "Food Delivery".
-async function getCategoryFamilyIds(id) {
-  const children = await Category.find({ parent: id }, { _id: 1 }).lean();
-  return [new mongoose.Types.ObjectId(id), ...children.map((c) => c._id)];
+async function getCategoryFamilyIds(userId, id) {
+  const children = getDb().prepare('SELECT id FROM active_categories WHERE parent_id = ? AND user_id = ?').pluck().all(id, userId);
+  return [id, ...children];
 }
 
-async function createCategory(data) {
+async function createCategory(userId, data) {
   if (data.parent) {
-    const parent = await getParent(data.parent);
+    const parent = getParent(userId, data.parent);
     data = { ...data, type: parent.type, color: data.color || parent.color };
   }
-  await assertNameAvailable(data.name, data.parent);
-  return Category.create(data);
+  assertNameAvailable(userId, data.name, data.parent);
+  return findById(userId, insertCategory(getDb(), userId, data));
 }
 
-async function updateCategory(id, data) {
-  const category = await Category.findById(id);
+async function updateCategory(userId, id, data) {
+  const category = findById(userId, id);
   if (!category) throw AppError.notFound('Category not found');
 
   const parentId = data.parent !== undefined ? data.parent : category.parent;
   if (parentId) {
-    if (String(parentId) === id) throw AppError.badRequest('A category cannot be its own parent', 'INVALID_PARENT');
-    if (data.parent && (await Category.exists({ parent: id }))) {
+    if (parentId === id) throw AppError.badRequest('A category cannot be its own parent', 'INVALID_PARENT');
+    if (data.parent && hasChildren(userId, id)) {
       throw AppError.badRequest('A category with subcategories cannot become a subcategory', 'INVALID_PARENT');
     }
-    const parent = await getParent(parentId);
+    const parent = getParent(userId, parentId);
     data = { ...data, type: parent.type };
   }
   if (data.name || data.parent !== undefined) {
-    await assertNameAvailable(data.name || category.name, parentId, category._id);
+    assertNameAvailable(userId, data.name || category.name, parentId, id);
   }
 
-  category.set(data);
-  await category.save();
+  const now = nowIso();
+  const changes = { updated_at: now };
+  if (data.name !== undefined) Object.assign(changes, { name: data.name, slug: slugify(data.name) });
+  if (data.type !== undefined) changes.type = data.type;
+  if (data.parent !== undefined) changes.parent_id = data.parent || null;
+  if (data.color !== undefined) changes.color = data.color;
+  if (data.icon !== undefined) changes.icon = data.icon;
 
-  // Subcategories always follow their parent's type.
-  if (!category.parent && data.type) {
-    await Category.updateMany({ parent: category._id }, { type: category.type });
-  }
-  return category;
+  const db = getDb();
+  db.transaction(() => {
+    updateRow(db, 'categories', id, changes);
+    // Subcategories always follow their parent's type.
+    if (!parentId && data.type) {
+      db.prepare('UPDATE categories SET type = ?, updated_at = ? WHERE parent_id = ? AND user_id = ?').run(data.type, now, id, userId);
+    }
+  })();
+  return findById(userId, id);
 }
 
-async function deleteCategory(id) {
-  const [children, inUse] = await Promise.all([
-    Category.countDocuments({ parent: id }),
-    Transaction.countDocuments({ category: id }),
-  ]);
+async function deleteCategory(userId, id) {
+  const db = getDb();
+  const deleted = findById(userId, id);
+  if (!deleted) throw AppError.notFound('Category not found');
+
+  const children = db.prepare('SELECT count(*) FROM active_categories WHERE parent_id = ? AND user_id = ?').pluck().get(id, userId);
+  const inUse = db.prepare('SELECT count(*) FROM transactions WHERE category_id = ? AND user_id = ?').pluck().get(id, userId);
   if (children > 0) {
     throw AppError.conflict(`Category has ${children} subcategory(s); delete or move them first`, 'CATEGORY_HAS_CHILDREN');
   }
   if (inUse > 0) {
     throw AppError.conflict(`Category is used by ${inUse} transaction(s); reassign them first`, 'CATEGORY_IN_USE');
   }
-
-  const deleted = await Category.findByIdAndDelete(id);
-  if (!deleted) throw AppError.notFound('Category not found');
+  db.prepare('DELETE FROM categories WHERE id = ? AND user_id = ?').run(id, userId);
   return deleted;
 }
 

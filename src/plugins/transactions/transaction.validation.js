@@ -1,5 +1,5 @@
 const { z } = require('zod');
-const { objectId, idParams, pagination } = require('../../core/schemas');
+const { entityId, idParams, pagination } = require('../../core/schemas');
 const { TRANSACTION_TYPES, SOURCES } = require('./transaction.model');
 const { SUMMARY_GROUP_KEYS } = require('./transaction.helper');
 const { normalizeTag, normalizeTags } = require('../tags/tag.helper');
@@ -13,7 +13,7 @@ const transactionBody = z.object({
   description: z.string().trim().min(1).max(500),
   amount: z.coerce.number().positive(),
   type: z.enum(TRANSACTION_TYPES).default('debit'),
-  category: objectId.nullable().optional(),
+  category: entityId.nullable().optional(),
   tags: tags.optional(),
   notes: z.string().trim().max(1000).optional(),
   account: z.string().trim().max(30).optional(),
@@ -30,15 +30,17 @@ const updateTransaction = z.object({
   params: idParams,
   body: transactionBody
     .partial()
+    // Creation defaults must never change an omitted field in a PATCH.
+    .extend({ type: z.enum(TRANSACTION_TYPES).optional() })
     .refine((b) => Object.keys(b).length > 0, 'Nothing to update'),
 });
 
 const bulkUpdateTransactions = z.object({
   body: z.object({
-    ids: z.array(objectId).min(1).max(1000),
+    ids: z.array(entityId).min(1).max(1000),
     set: z
       .object({
-        category: objectId.nullable().optional(),
+        category: entityId.nullable().optional(),
         tags: tags.optional(),
         addTags: tags.optional(),
         removeTags: tags.optional(),
@@ -57,16 +59,19 @@ const listTransactions = z.object({
     from: dateString.optional(),
     to: dateString.optional(),
     type: z.enum(TRANSACTION_TYPES).optional(),
-    category: z.union([objectId, z.literal('none')]).optional(),
+    category: z.union([entityId, z.literal('none')]).optional(),
     tag: tag.optional(),
     account: z.string().trim().optional(),
     source: z.enum(SOURCES).optional(),
-    importId: objectId.optional(),
+    importId: entityId.optional(),
+    // Only rows sorted automatically by merchant memory and not yet confirmed.
+    auto: z.stringbool().optional(),
     search: z.string().trim().max(100).optional(),
     minAmount: z.coerce.number().min(0).optional(),
     maxAmount: z.coerce.number().min(0).optional(),
     sort: z.string().default('-date'),
     ...pagination,
+    limit: z.coerce.number().int().min(1).max(200).default(30),
   }),
 });
 
@@ -76,7 +81,7 @@ const summary = z.object({
     to: dateString.optional(),
     type: z.enum(TRANSACTION_TYPES).optional(),
     account: z.string().trim().optional(),
-    category: z.union([objectId, z.literal('none')]).optional(),
+    category: z.union([entityId, z.literal('none')]).optional(),
     tag: tag.optional(),
     groupBy: z.enum(summaryGroups).default('category'),
   }),

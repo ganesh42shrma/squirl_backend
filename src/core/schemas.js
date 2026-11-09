@@ -1,14 +1,14 @@
 const { z } = require('zod');
-const mongoose = require('mongoose');
+const { ID_PATTERN } = require('./sql');
 
 // Small reusable Zod pieces shared across plugin validation files.
-const objectId = z.string().refine((v) => mongoose.isValidObjectId(v), { message: 'Invalid id' });
+const entityId = z.string().regex(ID_PATTERN, 'Invalid id');
 
-const idParams = z.object({ id: objectId });
+const idParams = z.object({ id: entityId });
 
 const pagination = {
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(500).default(50),
 };
 
-module.exports = { objectId, idParams, pagination };
+module.exports = { entityId, idParams, pagination };
