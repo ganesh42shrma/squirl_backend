@@ -54,8 +54,10 @@ async function tick() {
     }
     const users = usersWithUnsorted(db);
     if (!users.length) return;
-    const model = await llm.status();
     for (const userId of users) {
+      // Each person may use the local model or their own cloud API key (Profile → AI).
+      // eslint-disable-next-line no-await-in-loop
+      const model = await llm.status(userId);
       // eslint-disable-next-line no-await-in-loop
       await runForUser(db, userId, { allowModel: Boolean(model.available && model.loaded !== false) });
       if (Date.now() < backoffUntil) break;

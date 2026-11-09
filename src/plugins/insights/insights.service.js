@@ -182,7 +182,7 @@ async function writeSummary(userId, query) {
   if (!history.totals) return { text: null, reason: 'NO_DATA' };
 
   const facts = toFacts(history);
-  const key = createHash('sha256').update(userId).update(SYSTEM_PROMPT).update(JSON.stringify(SUMMARY_OPTIONS)).update(JSON.stringify(facts)).digest('hex');
+  const key = createHash('sha256').update(userId).update(llm.engineKey(userId)).update(SYSTEM_PROMPT).update(JSON.stringify(SUMMARY_OPTIONS)).update(JSON.stringify(facts)).digest('hex');
   if (summaryCache.has(key)) return summaryCache.get(key);
 
   // Write, then check every amount and % against the facts. One retry that names the bad numbers;
@@ -191,7 +191,7 @@ async function writeSummary(userId, query) {
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'user', content: `Facts:\n${JSON.stringify(facts, null, 1)}` },
   ];
-  let reply = await llm.chat(messages, SUMMARY_OPTIONS);
+  let reply = await llm.chat(messages, { ...SUMMARY_OPTIONS, userId });
   let check = checkNumbers(reply.text, facts);
   let attempts = 1;
   if (!check.ok) {
@@ -202,7 +202,7 @@ async function writeSummary(userId, query) {
         content: `These numbers are not in the facts: ${check.unverified.join(', ')}. Rewrite the summary using only amounts and percentages that appear in the facts, copied exactly. Preserve the useful interpretation and prioritized actions; do not replace them with a recital of totals.`,
       },
     );
-    reply = await llm.chat(messages, SUMMARY_OPTIONS);
+    reply = await llm.chat(messages, { ...SUMMARY_OPTIONS, userId });
     check = checkNumbers(reply.text, facts);
     attempts = 2;
   }
@@ -224,6 +224,6 @@ async function writeSummary(userId, query) {
   return result;
 }
 
-const getLlmStatus = () => llm.status();
+const getLlmStatus = (userId) => llm.status(userId);
 
 module.exports = { getBalances, getHistory, writeSummary, getLlmStatus };

@@ -7,6 +7,7 @@ const { newId, nowIso, placeholders } = require('../../core/sql');
 const { counterparty, isUsableKey } = require('../rules/rules.helper');
 const { learn } = require('../rules/rules.service');
 const llm = require('./llm.client');
+const guard = require('../ai/guard');
 const { familyPolicy } = require('../users/family');
 
 const BATCH = 40; // merchants per model call
@@ -82,52 +83,8 @@ Rules:
 - Never pick an income category for money going out.
 Answer with JSON only: {"items":[{"t":1,"c":4,"confidence":"high","person":false}]} with confidence "high", "medium" or "low".`;
 
-/** Asks the model about one batch of merchants and saves an answer (or "none") for every one of them. */
-async function suggestBatch(db, userId, groups) {
-  const generation = db.prepare('SELECT financial_generation FROM users WHERE id = ?').get(userId)?.financial_generation;
-  const categories = mainCategories(db, userId);
-  const byNumber = new Map(categories.map((c) => [c.n, c]));
-  const examples = pastChoices(db, userId);
-
-  const prompt = [
-    'Main categories:',
-    ...categories.map((c) => `${c.n}. ${c.name} (${c.type})${c.covers ? `: ${c.covers}` : ''}`),
-    '',
-    ...(examples.length
-      ? ['How this person has categorised before:', ...examples.map((e) => `- ${e.merchant_key} (${e.direction === 'debit' ? 'money out' : 'money in'}) → ${e.main}`), '']
-      : []),
-    'Transactions:',
-    ...groups.map((g, i) => `${i + 1}. [${g.direction === 'debit' ? 'money out' : 'money in'}] ${g.key} | ${g.example.slice(0, 100)}`),
-  ].join('\n');
-
-  const { text, model } = await llm.chat(
-    [
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: prompt },
-    ],
-    { json: true, maxTokens: 80 + groups.length * 28, temperature: 0 },
-  );
-  const answer = llm.parseJson(text);
-  if (db.prepare('SELECT financial_generation FROM users WHERE id = ?').get(userId)?.financial_generation !== generation) return 0;
-  if (!Array.isArray(answer?.items)) throw new AppError('The local model gave an answer that couldn’t be read', 502, 'LLM_BAD_RESPONSE');
-  // The profile may have changed while the model was answering.
-  const policy = familyPolicy(db, userId);
-
-  const picks = new Map();
-  for (const item of answer.items) {
-    const index = Number(item.t) - 1;
-    const group = groups[index];
-    const proposed = byNumber.get(Number(item.c));
-    const categoryId = policy.categoryFor(group?.example, proposed?.id, item.person === true);
-    const category = categories.find((c) => c.id === categoryId)
-      || (categoryId === policy.otherId ? { id: policy.otherId, type: 'expense' } : null);
-    if (!group || picks.has(index) || !category) continue; // invented row or category: ignore
-    if (group.direction === 'debit' && category.type === 'income') continue; // money out is never income
-    let confidence = ['high', 'medium', 'low'].includes(item.confidence) ? item.confidence : 'low';
-    if (group.direction === 'credit' && category.type === 'expense') confidence = 'low'; // only a refund fits
-    picks.set(index, { category, confidence, isPerson: item.person === true });
-  }
-
+/** Saves an answer for every merchant in the batch: the pick, or "none" so it isn't asked again. */
+function saveSuggestions(db, userId, groups, picks, model) {
   const now = nowIso();
   const insert = db.prepare(`
     INSERT INTO merchant_suggestions (id, user_id, direction, merchant_key, merchant, example, category_id, confidence, is_person, model, created_at, updated_at)
@@ -151,6 +108,65 @@ async function suggestBatch(db, userId, groups) {
       });
     });
   })();
+}
+
+/** Asks the model about one batch of merchants and saves an answer (or "none") for every one of them. */
+async function suggestBatch(db, userId, groups) {
+  const generation = db.prepare('SELECT financial_generation FROM users WHERE id = ?').get(userId)?.financial_generation;
+  const categories = mainCategories(db, userId);
+  const byNumber = new Map(categories.map((c) => [c.n, c]));
+  const examples = pastChoices(db, userId);
+
+  // Prompt guard (cloud models only): a transaction whose description looks like an attack is left
+  // out of the request and saved as "no suggestion", so one bad row never blocks the rest.
+  const { safe: asked } = await guard.partition(userId, groups, (g) => `${g.key} | ${g.example.slice(0, 100)}`);
+  if (!asked.length) {
+    saveSuggestions(db, userId, groups, new Map(), 'prompt-guard');
+    return 0;
+  }
+
+  const prompt = [
+    'Main categories:',
+    ...categories.map((c) => `${c.n}. ${c.name} (${c.type})${c.covers ? `: ${c.covers}` : ''}`),
+    '',
+    ...(examples.length
+      ? ['How this person has categorised before:', ...examples.map((e) => `- ${e.merchant_key} (${e.direction === 'debit' ? 'money out' : 'money in'}) → ${e.main}`), '']
+      : []),
+    'Transactions:',
+    ...asked.map((g, i) => `${i + 1}. [${g.direction === 'debit' ? 'money out' : 'money in'}] ${g.key} | ${g.example.slice(0, 100)}`),
+  ].join('\n');
+
+  const { text, model } = await llm.chat(
+    [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: prompt },
+    ],
+    // The descriptions were checked above; the rest of the prompt is Squirl's own.
+    { json: true, maxTokens: 80 + asked.length * 28, temperature: 0, userId, guarded: true },
+  );
+  const answer = llm.parseJson(text);
+  if (db.prepare('SELECT financial_generation FROM users WHERE id = ?').get(userId)?.financial_generation !== generation) return 0;
+  if (!Array.isArray(answer?.items)) throw new AppError('The local model gave an answer that couldn’t be read', 502, 'LLM_BAD_RESPONSE');
+  // The profile may have changed while the model was answering.
+  const policy = familyPolicy(db, userId);
+
+  const picks = new Map();
+  for (const item of answer.items) {
+    // The model numbers the rows it was shown; map back to this batch (flagged rows were left out).
+    const group = asked[Number(item.t) - 1];
+    const index = group ? groups.indexOf(group) : -1;
+    const proposed = byNumber.get(Number(item.c));
+    const categoryId = policy.categoryFor(group?.example, proposed?.id, item.person === true);
+    const category = categories.find((c) => c.id === categoryId)
+      || (categoryId === policy.otherId ? { id: policy.otherId, type: 'expense' } : null);
+    if (!group || picks.has(index) || !category) continue; // invented row or category: ignore
+    if (group.direction === 'debit' && category.type === 'income') continue; // money out is never income
+    let confidence = ['high', 'medium', 'low'].includes(item.confidence) ? item.confidence : 'low';
+    if (group.direction === 'credit' && category.type === 'expense') confidence = 'low'; // only a refund fits
+    picks.set(index, { category, confidence, isPerson: item.person === true });
+  }
+
+  saveSuggestions(db, userId, groups, picks, model);
   return picks.size;
 }
 

@@ -17,5 +17,8 @@ router.use('/imports', require('./imports/import.routes'));
 router.use('/insights', require('./insights/insights.routes'));
 router.use('/rules', require('./rules/rules.routes'));
 router.use('/commitments', require('./commitments/commitment.routes'));
+router.use('/goals', require('./goals/goal.routes'));
+router.use('/ai', require('./ai/ai.routes'));
+router.use('/feeds', require('./feeds/feeds.routes'));
 
 module.exports = router;

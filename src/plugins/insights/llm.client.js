@@ -1,10 +1,14 @@
 const config = require('../../config');
 const AppError = require('../../core/AppError');
 const logger = require('../../core/logger');
+const { activeEngine, PROVIDERS } = require('../ai/ai.service');
+const guard = require('../ai/guard');
 
 /**
- * Talks to a local LLM server through the OpenAI-compatible chat API
- * (llama.cpp's llama-server, Ollama, LM Studio all speak it). Nothing leaves this machine.
+ * Every model call goes through here. By default it talks to a local LLM server through the
+ * OpenAI-compatible chat API (llama.cpp's llama-server, Ollama, LM Studio all speak it), and
+ * nothing leaves this machine. When a person switches Profile → AI to "API", calls that carry
+ * their `userId` go to Claude or OpenAI with their own key instead (see plugins/ai).
  */
 async function request(path, { body, timeoutMs }) {
   try {
@@ -29,7 +33,18 @@ const stripThinking = (text) => text.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi,
  * Reasoning is enabled by default. Reserve extra tokens for it so the final answer is not
  * crowded out. Return only final content; separate reasoning fields never leave this client.
  */
-async function chat(messages, { maxTokens = 450, json = false, temperature = 0.2, reasoning = 'medium' } = {}) {
+async function chat(messages, { userId, guarded = false, ...options } = {}) {
+  // Prompt guard (Profile → AI): checks the user-written parts before any engine sees them.
+  if (userId && !guarded) await guard.assertSafe(userId, messages);
+  const engine = userId ? activeEngine(userId) : { mode: 'local' };
+  if (engine.mode === 'api') {
+    const result = await PROVIDERS[engine.provider].chat(engine, messages, options);
+    return { ...result, provider: engine.provider };
+  }
+  return { ...(await localChat(messages, options)), provider: 'local' };
+}
+
+async function localChat(messages, { maxTokens = 450, json = false, temperature = 0.2, reasoning = 'medium' } = {}) {
   const response = await request('/v1/chat/completions', {
     body: {
       model: config.llm.model,
@@ -71,7 +86,20 @@ function parseJson(text) {
  * (Ollama's /api/ps); a cold model takes minutes to load from the drive. Other servers
  * don't have that endpoint, so `loaded` is then left out.
  */
-async function status() {
+async function status(userId) {
+  const engine = userId ? activeEngine(userId) : { mode: 'local' };
+  // A cloud API has no "loading" state; whether the key works shows on the first real call.
+  if (engine.mode === 'api') return { available: true, mode: 'api', provider: engine.provider, model: engine.model, loaded: true };
+  return { mode: 'local', ...(await localStatus()) };
+}
+
+/** Identifies the engine in cache keys, so switching model or provider never reuses an old answer. */
+function engineKey(userId) {
+  const engine = userId ? activeEngine(userId) : { mode: 'local' };
+  return engine.mode === 'api' ? `${engine.provider}:${engine.model}` : `local:${config.llm.model}`;
+}
+
+async function localStatus() {
   try {
     const response = await request('/v1/models', { timeoutMs: 1500 });
     if (!response.ok) return { available: false };
@@ -94,4 +122,31 @@ async function status() {
   }
 }
 
-module.exports = { chat, status, parseJson };
+/**
+ * One answer shaped by a JSON schema, for features that fill in a form (goal setup). Cloud
+ * engines can search the web first and, with "strict" on, are constrained to the schema; the
+ * local model gets JSON mode and never searches (it's offline). Returns the parsed object plus
+ * the sources it read; the caller still validates every field.
+ */
+async function structured(userId, { system, prompt, schema, name, reasoning = 'low' }) {
+  if (userId) await guard.assertSafe(userId, [{ role: 'user', content: prompt }]);
+  const engine = userId ? activeEngine(userId) : { mode: 'local' };
+  if (engine.mode === 'api') {
+    const r = await PROVIDERS[engine.provider].structured(engine, { system, prompt, schema, name, webSearch: engine.webSearch, strict: engine.strict, reasoning });
+    const data = r.data ?? parseJson(r.text);
+    if (!data) throw new AppError('The model gave an answer that couldn’t be read', 502, 'LLM_BAD_RESPONSE');
+    return { data, sources: r.sources || [], searched: Boolean(r.searched), strict: Boolean(r.strict), searchUnavailable: r.searchUnavailable || null, model: r.model, provider: engine.provider };
+  }
+  const { text, model } = await localChat(
+    [
+      { role: 'system', content: `${system}\n\nYou cannot browse the web. Reply with one JSON object matching this JSON schema:\n${JSON.stringify(schema)}` },
+      { role: 'user', content: prompt },
+    ],
+    { json: true, maxTokens: 600, temperature: 0, reasoning },
+  );
+  const data = parseJson(text);
+  if (!data) throw new AppError('The local model gave an answer that couldn’t be read', 502, 'LLM_BAD_RESPONSE');
+  return { data, sources: [], searched: false, strict: false, model, provider: 'local' };
+}
+
+module.exports = { chat, structured, status, parseJson, engineKey };

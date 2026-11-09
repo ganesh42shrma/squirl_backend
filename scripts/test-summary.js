@@ -41,7 +41,7 @@ async function main() {
   const result = await realClient.chat([{ role: 'user', content: 'Synthetic test' }], SUMMARY_OPTIONS);
   assert.equal(requestBody.reasoning_effort, 'medium');
   assert.equal(requestBody.max_tokens, 3148);
-  assert.deepEqual(result, { text: 'Final answer', model: 'synthetic' });
+  assert.deepEqual(result, { text: 'Final answer', model: 'synthetic', provider: 'local' }); // no userId → always the local model
   await realClient.chat([], { json: true, maxTokens: 100 });
   assert.equal(requestBody.reasoning_effort, 'medium');
   assert.deepEqual(requestBody.response_format, { type: 'json_object' });
@@ -67,8 +67,10 @@ async function main() {
   insertTransaction(db, user, { date: '2026-10-01', description: 'PRIVATE DESCRIPTION', notes: 'PRIVATE NOTES', category, amount: 50 });
   let calls = 0;
   stub('../src/plugins/insights/llm.client', {
-    chat: async (messages, options) => {
+    engineKey: () => 'local:synthetic',
+    chat: async (messages, { userId, ...options }) => {
       calls++;
+      assert.equal(userId, user); // the person's AI setting picks the engine
       assert.deepEqual(options, SUMMARY_OPTIONS);
       assert.equal(messages[0].content, SYSTEM_PROMPT);
       assert.equal(messages[1].content.includes('PRIVATE'), false);

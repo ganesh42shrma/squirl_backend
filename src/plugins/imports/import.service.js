@@ -78,6 +78,8 @@ async function createImport(userId, { file, bank, password }) {
     logger.info('Statement import completed', { importId: id, bank: statementBank, ...stats });
     // New unsorted rows: let the background job suggest categories for them now.
     if (stats.inserted > stats.auto_categorized) suggestionWorker.nudge();
+    // New rows can move goals funded by an auto-debit or a watched account: refresh their plan check.
+    if (stats.inserted) require('../goals/goal.worker').nudge(userId);
     return findById(userId, id);
   } catch (err) {
     try {

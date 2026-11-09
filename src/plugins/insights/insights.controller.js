@@ -16,7 +16,7 @@ async function summary(req, res) {
 }
 
 async function llmStatus(req, res) {
-  sendSuccess(res, await service.getLlmStatus());
+  sendSuccess(res, await service.getLlmStatus(req.user.id));
 }
 
 // Category suggestions: worked out in the background (see suggestions.worker), applied on request.

@@ -401,4 +401,91 @@ module.exports = [
   },
   // v14: dashboard preferences belong to Profile and survive financial resets.
   'ALTER TABLE users ADD COLUMN dashboard_config TEXT;',
+  // v15: which model writes Squirl's words (local or a cloud API with the person's own key), and
+  // savings goals. A goal is a price today plus a plan; money saved comes from a linked auto-debit,
+  // a watched account, transactions the person links, and manual entries (negative = withdrawal).
+  // An 'excluded' contribution row keeps one auto-detected transaction out of a goal.
+  `
+  ALTER TABLE users ADD COLUMN ai_settings TEXT;
+  CREATE TABLE goals (
+    id               TEXT PRIMARY KEY,
+    user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name             TEXT NOT NULL,
+    kind             TEXT NOT NULL DEFAULT 'other',
+    price_paise      INTEGER NOT NULL CHECK (price_paise > 0),               -- what it costs today
+    price_as_of      TEXT NOT NULL,
+    plan             TEXT NOT NULL CHECK (plan IN ('by_date', 'by_amount')),
+    target_date      TEXT,                                                   -- by_date
+    monthly_paise    INTEGER CHECK (monthly_paise IS NULL OR monthly_paise > 0), -- planned monthly saving
+    opening_paise    INTEGER NOT NULL DEFAULT 0 CHECK (opening_paise >= 0),  -- saved before the start date
+    inflation_rate   REAL NOT NULL DEFAULT 6 CHECK (inflation_rate BETWEEN 0 AND 50),
+    saving_in        TEXT NOT NULL DEFAULT 'savings',
+    return_rate      REAL NOT NULL DEFAULT 0 CHECK (return_rate BETWEEN 0 AND 50),
+    start_date       TEXT NOT NULL,
+    watch_account    TEXT,
+    commitment_id    TEXT REFERENCES commitments(id) ON DELETE SET NULL,
+    status           TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'paused', 'achieved')),
+    notes            TEXT,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    deleted_at       TEXT
+  );
+  CREATE INDEX goals_user ON goals (user_id, status);
+  CREATE UNIQUE INDEX goals_active_commitment ON goals (commitment_id) WHERE commitment_id IS NOT NULL AND deleted_at IS NULL;
+  CREATE VIEW active_goals AS SELECT rowid AS rowid, * FROM goals WHERE deleted_at IS NULL;
+  CREATE TABLE goal_contributions (
+    id              TEXT PRIMARY KEY,
+    goal_id         TEXT NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
+    user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    source          TEXT NOT NULL CHECK (source IN ('manual', 'transaction', 'excluded')),
+    amount_paise    INTEGER NOT NULL,
+    date            TEXT NOT NULL,
+    transaction_id  TEXT REFERENCES transactions(id) ON DELETE CASCADE,
+    note            TEXT,
+    created_at      TEXT NOT NULL
+  );
+  CREATE INDEX goal_contributions_goal ON goal_contributions (goal_id, date);
+  CREATE UNIQUE INDEX goal_contributions_txn ON goal_contributions (goal_id, transaction_id) WHERE transaction_id IS NOT NULL;
+  CREATE TABLE goal_analyses (
+    goal_id       TEXT PRIMARY KEY REFERENCES goals(id) ON DELETE CASCADE,
+    fingerprint   TEXT NOT NULL,
+    body          TEXT NOT NULL,       -- JSON: { text, check, facts }
+    engine        TEXT NOT NULL,
+    model         TEXT,
+    generated_at  TEXT NOT NULL
+  );
+  `,
+  // v16: live data from free public APIs (weather, inflation, exchange rates, fund NAVs, crypto,
+  // news). users.feeds holds the person's city, watchlists, holdings and optional keys (JSON);
+  // feed_cache keeps the last good answer per request so a dead API only makes a card stale.
+  `
+  ALTER TABLE users ADD COLUMN feeds TEXT;
+  CREATE TABLE feed_cache (
+    key         TEXT PRIMARY KEY,
+    body        TEXT NOT NULL,
+    fetched_at  TEXT NOT NULL,
+    expires_at  INTEGER NOT NULL
+  );
+  `,
+  // v17: a personal watchlist of movies, shows and anime (from TMDB): starred, and/or on the
+  // "must watch" or "watch later" list. Not financial data, so a financial reset leaves it alone.
+  `
+  CREATE TABLE watchlist (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    media_type  TEXT NOT NULL CHECK (media_type IN ('movie', 'tv')),
+    tmdb_id     INTEGER NOT NULL,
+    title       TEXT NOT NULL,
+    poster      TEXT,
+    overview    TEXT,
+    year        INTEGER,
+    rating      REAL,
+    anime       INTEGER NOT NULL DEFAULT 0,
+    starred     INTEGER NOT NULL DEFAULT 0,
+    list        TEXT CHECK (list IS NULL OR list IN ('must_watch', 'watch_later')),
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    UNIQUE (user_id, media_type, tmdb_id)
+  );
+  `,
 ];
