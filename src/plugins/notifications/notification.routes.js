@@ -24,9 +24,9 @@ router.post('/remove', validate(schemas.byEndpoint), (req, res) => {
   service.remove(req.user.id, req.sessionID, req.body.endpoint);
   sendSuccess(res, null);
 });
-router.post('/test', validate(schemas.byEndpoint), async (req, res) => {
+router.post('/test', validate(schemas.test), async (req, res) => {
   await rateLimit.hit(`push-test:${req.user.id}`, { limit: 3, windowSec: 60 });
-  await service.test(req.user.id, req.sessionID, req.body.endpoint);
+  await service.test(req.user.id, req.sessionID, req.body.endpoint, req.body.kind);
   sendSuccess(res, null, { message: 'Test notification sent' });
 });
 module.exports = router;

@@ -61,6 +61,9 @@ async function main() {
   }
   assert.equal(schemas.subscribe.safeParse({ body: { ...body, preferences: { ...prefs, dailyTime: '25:01' } } }).success, false);
   assert.equal(schemas.subscribe.safeParse({ body: { ...body, preferences: { ...prefs, tasks: 'false' } } }).success, false);
+  assert.equal(schemas.test.parse({ body: { endpoint: subscription.endpoint } }).body.kind, 'test');
+  assert.equal(schemas.test.safeParse({ body: { endpoint: subscription.endpoint, kind: 'sms_payment' } }).success, true);
+  assert.equal(schemas.test.safeParse({ body: { endpoint: subscription.endpoint, kind: 'unknown' } }).success, false);
   assert.throws(() => service.subscribe(a, 's', stamp, { ...body, subscription: { ...subscription, keys: { ...subscription.keys, p256dh: Buffer.alloc(65).toString('base64url') } } }), /public key/);
   assert.equal(subscribe().enabled, true);
   // Configuration must be explicit; saving a device never enables outbound delivery by itself.
@@ -83,7 +86,14 @@ async function main() {
   let messages = await remindersFor(db, a, prefs, DEFAULT_SETTINGS, now);
   assert.deepEqual(messages.map((m) => m.kind), ['tasks', 'tasks', 'habits', 'bills']);
   assert(messages.some((m) => m.key === `task:timed:${date}:19:00`));
-  assert(!JSON.stringify(messages).includes('Private'), 'no titles, names, or amounts leave the desktop');
+  // Details on (the default): titles, names and the first bill travel in the encrypted payload.
+  assert.deepEqual(messages.find((m) => m.key === `task:timed:${date}:19:00`).detail, { title: 'Private title timed', time: '19:00' });
+  assert.equal(messages.find((m) => m.kind === 'habits').detail.count, 1);
+  assert.deepEqual(messages.find((m) => m.kind === 'bills').detail, { count: 1, name: 'Private bill', amount: 500, missed: false, daysUntil: 1 });
+  // Details off: only the kind leaves the desktop.
+  const plain = await remindersFor(db, a, { ...prefs, details: false }, DEFAULT_SETTINGS, now);
+  assert.deepEqual(plain.map((m) => m.kind), ['tasks', 'tasks', 'habits', 'bills']);
+  assert(!JSON.stringify(plain).includes('Private') && plain.every((m) => !m.detail), 'no titles, names, or amounts leave the desktop');
   assert.deepEqual(await remindersFor(db, a, { ...prefs, tasks: false, habits: false, bills: false }, DEFAULT_SETTINGS, now), []);
   assert.deepEqual(await remindersFor(db, a, prefs, DEFAULT_SETTINGS, at(date, '08:00')), []);
   assert.equal((await remindersFor(db, a, prefs, { ...DEFAULT_SETTINGS, vacationFrom: date, vacationUntil: date }, now)).some((m) => m.kind === 'habits'), false);
@@ -128,7 +138,22 @@ async function main() {
   subscribe(); session(); failure = { statusCode: 410 }; await worker.runOnce(now);
   assert.equal(db.prepare('SELECT count(*) AS n FROM push_subscriptions').get().n, 0, 'expired endpoints are removed');
   failure = null;
-  subscribe(); db.prepare('DELETE FROM users WHERE id = ?').run(a);
+  subscribe();
+  await assert.rejects(service.test(a, 'a-session', subscription.endpoint, 'sms_payment'), /no unanswered SMS payment/);
+  const { insertTransaction } = require('../src/plugins/transactions/transaction.model');
+  const paymentId = insertTransaction(db, a, { date, description: 'Private SMS merchant', amount: 5, source: 'sms' });
+  require('../src/plugins/notifications/payment-prompts').record(db, a, paymentId);
+  await service.test(a, 'a-session', subscription.endpoint, 'sms_payment');
+  const notice = sent.at(-1).payload;
+  assert.equal(notice.kind, 'sms_payment');
+  assert.match(notice.promptId, /^[a-f0-9]{24}$/);
+  assert.equal(notice.detail.party, 'Private SMS merchant', 'details are on by default');
+  db.prepare('UPDATE push_subscriptions SET preferences = ? WHERE user_id = ?').run(JSON.stringify({ ...prefs, details: false }), a);
+  await service.test(a, 'a-session', subscription.endpoint, 'sms_payment');
+  assert(!JSON.stringify(sent.at(-1).payload).includes('Private SMS merchant'), 'details off keeps the merchant on the desktop');
+  assert.equal(db.prepare('SELECT count(*) FROM transactions WHERE id = ?').pluck().get(paymentId), 1, 'testing a reply does not create another payment');
+  await assert.rejects(service.test(b, 'a-session', subscription.endpoint, 'sms_payment'), /Enable notifications/);
+  db.prepare('DELETE FROM users WHERE id = ?').run(a);
   assert.equal(db.prepare('SELECT count(*) AS n FROM push_subscriptions').get().n, 0, 'account deletion removes device data');
   assert.equal(db.pragma('foreign_key_check').length, 0);
   console.log('Passed: subscription validation and isolation, task/habit/bill eligibility, timezones, rest/vacation/completion, durable dedupe, retry, expired endpoints, session/password revocation, account deletion, and private payloads.');

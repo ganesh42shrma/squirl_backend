@@ -7,6 +7,12 @@ const { categoryFor } = require('../rules/rules.service');
 const { parseSms, normalize } = require('./sms.parser');
 const { matches, relatedPayments, linkTransfer } = require('./sms.reconcile');
 
+// "JM-KOTAKB-S" -> "KOTAKB": the 2-letter operator/circle prefix and 1-letter type suffix vary by
+// network, so only the DLT header identifies the bank. Mirrors BankFilter.header() on the phone.
+const senderHeader = (id) => {
+  const s = String(id).trim().toUpperCase();
+  return /^(?:[A-Z]{2}-)?([A-Z0-9]{3,})(?:-[A-Z])?$/.exec(s)?.[1] || s;
+};
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const failAuth = () => new AppError('Pair this SMS device again', 401, 'SMS_AUTH_REQUIRED');
 const ack = (row) => ({ id: row.id, status: row.status, reason: row.reason || undefined, transactionId: row.transaction_id || undefined });
@@ -113,7 +119,7 @@ function ingest(device, input) {
       throw AppError.badRequest('Only new messages received after pairing can be submitted', 'SMS_EVENT_DATE');
     }
     const bindings = db.prepare('SELECT * FROM sms_accounts WHERE user_id = ? AND deleted_at IS NULL').all(device.user_id)
-      .filter((a) => JSON.parse(a.senders).includes(input.sender));
+      .filter((a) => JSON.parse(a.senders).some((s) => senderHeader(s) === senderHeader(input.sender)));
     if (!bindings.length) return { status: 'ignored', reason: 'sender_not_allowed' }; // Do not retain personal messages.
     const old = db.prepare('SELECT * FROM sms_events WHERE user_id = ? AND message_hash = ? AND deleted_at IS NULL LIMIT 1').get(device.user_id, messageHash);
     const parsed = parseSms(input.body);
@@ -158,4 +164,4 @@ function reviewEvent(userId, id, fields) {
   })();
 }
 
-module.exports = { listAccounts, saveAccounts, createDevice, listDevices, revokeDevice, authenticate, ingest, listEvents, reviewEvent };
+module.exports = { senderHeader, listAccounts, saveAccounts, createDevice, listDevices, revokeDevice, authenticate, ingest, listEvents, reviewEvent };

@@ -4,7 +4,7 @@ const { getDb } = require('../../config/db');
 const { newId, nowIso } = require('../../core/sql');
 const AppError = require('../../core/AppError');
 
-const DEFAULT_PREFERENCES = { tasks: true, habits: true, bills: true, smsPayments: true, dailyTime: '09:00', habitTime: '20:00' };
+const DEFAULT_PREFERENCES = { tasks: true, habits: true, bills: true, smsPayments: true, details: true, dailyTime: '09:00', habitTime: '20:00' };
 const ready = () => Boolean(config.push.publicKey && config.push.privateKey && config.push.subject);
 
 function deviceStatus(userId, sessionId, endpoint) {
@@ -53,11 +53,18 @@ async function send(row, message) {
   });
 }
 
-async function test(userId, sessionId, endpoint) {
+async function test(userId, sessionId, endpoint, kind = 'test') {
   const row = getDb().prepare(`SELECT p.* FROM push_subscriptions p JOIN users u ON u.id = p.user_id
     WHERE p.user_id = ? AND p.session_id = ? AND p.endpoint = ? AND p.password_changed_at = u.password_changed_at`).get(userId, sessionId, endpoint);
   if (!row) throw AppError.notFound('Enable notifications on this device first');
-  try { await send(row, { kind: 'test', tag: 'squirl-test' }); }
+  let message = { kind: 'test', tag: 'squirl-test', ...(JSON.parse(row.preferences).details !== false && { detail: {} }) };
+  if (kind === 'sms_payment') {
+    const prompt = require('./payment-prompts').pending(getDb(), row, new Date()).at(-1);
+    if (!prompt) throw AppError.notFound('There is no unanswered SMS payment to test. A new SMS payment will create one.');
+    const { key, ...notice } = prompt;
+    message = notice;
+  }
+  try { await send(row, message); }
   catch (err) {
     if ([404, 410].includes(err.statusCode)) {
       remove(userId, sessionId, endpoint);

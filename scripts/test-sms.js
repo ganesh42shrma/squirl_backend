@@ -105,6 +105,13 @@ async function main() {
   assert.equal(row(isolated.transactionId).user_id, b);
   const countBefore = db.prepare('SELECT count(*) FROM sms_events').pluck().get();
   assert.equal(deliver('Personal chat content', 'FRIEND').reason, 'sender_not_allowed');
+  assert.equal(sms.senderHeader('JM-KOTAKB-S'), 'KOTAKB');
+  assert.equal(sms.senderHeader('vm-sbiupi'), 'SBIUPI');
+  assert.equal(sms.senderHeader('TEST-SBI'), 'TEST-SBI');
+  // Unseen operator prefixes and suffixes still map to the configured header.
+  assert.equal(sms.senderHeader('ZQ-KOTAKB-S'), sms.senderHeader('KOTAKB'));
+  assert.notEqual(sms.senderHeader('ZQ-KOTAKBX-S'), 'KOTAKB');
+  assert.equal(deliver(sbi(80), 'ZQ-TEST-SBIX').reason, 'sender_not_allowed');
   assert.equal(db.prepare('SELECT count(*) FROM sms_events').pluck().get(), countBefore);
   const otp = deliver('OTP 000000. Do not share.');
   assert.equal(otp.status, 'ignored');

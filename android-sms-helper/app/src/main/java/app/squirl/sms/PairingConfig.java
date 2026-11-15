@@ -14,8 +14,11 @@ final class PairingConfig {
     final List<Account> accounts;
     static final class Account {
         final String bank, last4;
-        final Set<String> senders;
-        Account(String bank, String last4, Set<String> senders) { this.bank = bank; this.last4 = last4; this.senders = senders; }
+        final Set<String> senders, headers = new HashSet<>();
+        Account(String bank, String last4, Set<String> senders) {
+            this.bank = bank; this.last4 = last4; this.senders = senders;
+            for (String sender : senders) headers.add(BankFilter.header(sender));
+        }
     }
     private PairingConfig(String baseUrl, String token, List<Account> accounts) { this.baseUrl = baseUrl; this.token = token; this.accounts = accounts; }
 

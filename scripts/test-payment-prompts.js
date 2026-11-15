@@ -58,8 +58,9 @@ async function main() {
   sms.ingest(device, input(3, { body: 'A/C X1111 OTP 123456' }));
   assert.equal(db.prepare('SELECT count(*) FROM payment_prompts').pluck().get(), 1);
   await worker.runOnce();
-  assert.deepEqual(sent, [{ kind: 'sms_payment', tag: `sms-payment-${prompt.id}`, promptId: prompt.id }]);
-  assert.equal(JSON.stringify(sent).includes('SYNTHETIC SHOP'), false);
+  assert.deepEqual(sent.map(({ detail, ...m }) => m), [{ kind: 'sms_payment', tag: `sms-payment-${prompt.id}`, promptId: prompt.id }]);
+  assert.equal(sent[0].detail.party.includes('SYNTHETIC SHOP'), true, 'details are on by default');
+  assert(sent[0].detail.amount > 0 && ['debit', 'credit'].includes(sent[0].detail.type));
   await worker.runOnce(); assert.equal(sent.length, 1);
   await assert.rejects(payments.get(b, prompt.id), (e) => e.statusCode === 404);
   await assert.rejects(payments.reply(b, prompt.id, 'Wrong account'), /no longer available/);
@@ -106,6 +107,8 @@ async function main() {
   const sub = db.prepare('SELECT * FROM push_subscriptions WHERE user_id = ?').get(a);
   const pending = payments.pending(db, sub, new Date());
   assert(pending.some((p) => p.promptId === promptFor(second.transactionId).id));
+  const plain = payments.pending(db, { ...sub, preferences: JSON.stringify({ details: false }) }, new Date());
+  assert(plain.length && plain.every((p) => !p.detail), 'details off sends no amount or merchant');
   assert.deepEqual(payments.pending(db, { ...sub, created_at: new Date(clock + 1).toISOString() }, new Date()), [], 'new subscriptions do not receive historical payment prompts');
   assert.deepEqual(payments.pending(db, sub, new Date(clock + 2 * 86400_000)), [], 'old unanswered prompts expire from delivery');
   const reset = sms.ingest(device, input(7));
