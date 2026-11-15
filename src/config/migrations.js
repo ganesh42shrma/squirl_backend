@@ -805,4 +805,28 @@ module.exports = [
   CREATE INDEX attachments_media ON attachments (media_id) WHERE deleted_at IS NULL;
   CREATE VIEW active_attachments AS SELECT rowid AS rowid, * FROM attachments WHERE deleted_at IS NULL;
   `,
+  // v27: photos on EMIs & bills ('commitment') and on capture inbox notes ('capture'). SQLite can't change a CHECK
+  // in place, so the table is rebuilt with the same rows, indexes and view. `inbox_captures` is the "live owner"
+  // view for a capture: only a note still waiting in the inbox can hold photos (sorting it moves them on).
+  `
+  DROP VIEW active_attachments;
+  CREATE TABLE attachments_v27 (
+    id         TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    media_id   TEXT NOT NULL REFERENCES media(id),
+    owner_type TEXT NOT NULL CHECK (owner_type IN ('transaction', 'task', 'goal', 'commitment', 'capture')),
+    owner_id   TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+  INSERT INTO attachments_v27 (rowid, id, user_id, media_id, owner_type, owner_id, created_at, deleted_at)
+    SELECT rowid, id, user_id, media_id, owner_type, owner_id, created_at, deleted_at FROM attachments ORDER BY rowid;
+  DROP TABLE attachments;
+  ALTER TABLE attachments_v27 RENAME TO attachments;
+  CREATE UNIQUE INDEX attachments_owner_media ON attachments (user_id, owner_type, owner_id, media_id) WHERE deleted_at IS NULL;
+  CREATE INDEX attachments_owner ON attachments (user_id, owner_type, owner_id);
+  CREATE INDEX attachments_media ON attachments (media_id) WHERE deleted_at IS NULL;
+  CREATE VIEW active_attachments AS SELECT rowid AS rowid, * FROM attachments WHERE deleted_at IS NULL;
+  CREATE VIEW inbox_captures AS SELECT rowid AS rowid, * FROM captures WHERE deleted_at IS NULL AND status = 'inbox';
+  `,
 ];

@@ -30,6 +30,7 @@ const { narrow } = require('../sms/sms.reconcile');
 const { DEFAULT_DESCRIPTIONS } = require('./capture.parser');
 const parser = require('./capture.parser');
 const ai = require('./capture.ai');
+const media = require('../media/media.service');
 
 const INBOX_LIMIT = 50;
 const BANK_ACCOUNT_DAYS = 90; // how far back "the bank you usually use" looks
@@ -281,6 +282,9 @@ function commit(userId, { text, actions, inboxId, engine = 'rules', clientId }, 
 
     if (created.length) {
       if (source) {
+        // Photos on the inbox note go with it to what it became (the first payment, else the first task).
+        const target = created.find((item) => item.type === 'transaction') || created.find((item) => item.type === 'task');
+        if (target) media.moveAttachments(db, userId, { type: 'capture', id: source.id }, { type: target.type, id: target.id });
         const stamp = nowIso();
         db.prepare("UPDATE captures SET status = 'done', text = ?, engine = ?, result = ?, client_id = ?, request_hash = ?, updated_at = ?, resolved_at = ? WHERE id = ?")
           .run(text, engine, JSON.stringify(created), clientId ?? null, hash, stamp, stamp, source.id);
@@ -375,7 +379,12 @@ function dismiss(userId, id) {
   const row = findCapture(db, userId, id);
   if (row.status !== 'inbox') throw AppError.conflict('Only inbox items can be dismissed', 'CAPTURE_NOT_INBOX');
   const stamp = nowIso();
-  db.prepare("UPDATE captures SET status = 'dismissed', updated_at = ?, resolved_at = ? WHERE id = ?").run(stamp, stamp, id);
+  // Dismissing is throwing the note away, so its photos go too (files only after the change has committed).
+  const released = db.transaction(() => {
+    db.prepare("UPDATE captures SET status = 'dismissed', updated_at = ?, resolved_at = ? WHERE id = ?").run(stamp, stamp, id);
+    return media.detachOwner(db, userId, 'capture', id, stamp);
+  })();
+  media.purgeFiles(released);
   return { _id: id, status: 'dismissed' };
 }
 

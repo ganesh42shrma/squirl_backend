@@ -10,8 +10,7 @@ const { inspectImage, dimensionsAllowed, MAX_SIDE, EXTENSIONS } = require('./med
 const replica = require('./media.replica');
 
 const ORPHAN_AGE_MS = 24 * 60 * 60 * 1000;
-// Owner type -> the view of its live (not deleted) rows. Names come from this table only, never from input.
-const OWNER_VIEWS = Object.freeze({ transaction: 'active_transactions', task: 'active_tasks', goal: 'active_goals' });
+const { OWNER_VIEWS } = require('./media.owners');
 
 // SQL: "attachment alias `a` points at an owner that is still live and belongs to the same account".
 const liveOwner = (a) => `(${Object.entries(OWNER_VIEWS).map(([type, view]) =>
@@ -191,6 +190,32 @@ function detachOwnerTypes(db, userId, ownerTypes, now = nowIso()) {
   return releaseMedia(db, userId, ids, now);
 }
 
+/**
+ * Moves every live photo on one item to another (inside the caller's transaction): a capture inbox note that is
+ * sorted into a payment or task takes its photos with it. A picture the target already has is just dropped from
+ * the source. Ownership of both items is the caller's responsibility (it has just created or loaded them).
+ */
+function moveAttachments(db, userId, from, to) {
+  const rows = db.prepare('SELECT id, media_id FROM active_attachments WHERE user_id = ? AND owner_type = ? AND owner_id = ?')
+    .all(userId, from.type, from.id);
+  const already = db.prepare('SELECT 1 FROM active_attachments WHERE user_id = ? AND owner_type = ? AND owner_id = ? AND media_id = ?');
+  const now = nowIso();
+  for (const row of rows) {
+    if (already.get(userId, to.type, to.id, row.media_id)) db.prepare('UPDATE attachments SET deleted_at = ? WHERE id = ?').run(now, row.id);
+    else db.prepare('UPDATE attachments SET owner_type = ?, owner_id = ? WHERE id = ?').run(to.type, to.id, row.id);
+  }
+  return rows.length;
+}
+
+/** Detaches every photo on one item (inside the caller's transaction) and returns the files to purge afterwards. */
+function detachOwner(db, userId, ownerType, ownerId, now = nowIso()) {
+  const ids = db.prepare('SELECT DISTINCT media_id FROM active_attachments WHERE user_id = ? AND owner_type = ? AND owner_id = ?')
+    .pluck().all(userId, ownerType, ownerId);
+  if (!ids.length) return [];
+  db.prepare('UPDATE attachments SET deleted_at = ? WHERE user_id = ? AND owner_type = ? AND owner_id = ? AND deleted_at IS NULL').run(now, userId, ownerType, ownerId);
+  return releaseMedia(db, userId, ids, now);
+}
+
 /** Deletes the local files of released pictures (idempotent) and asks the replica worker to remove remote copies. */
 function purgeFiles(released) {
   if (!released.length) return;
@@ -231,8 +256,13 @@ function eraseFiles(items) {
 }
 
 /**
- * Orphan sweep. Removes (1) pictures nothing is attached to any more and (2) files no live picture row owns,
- * but only once they are a day old, so an upload in progress is never touched. Safe to run any time.
+ * Orphan sweep. Removes (1) pictures nothing is attached to any more, (2) leftover temp files from interrupted
+ * uploads and (3) files of pictures this database has deleted, all only once they are a day old, so an upload in
+ * progress is never touched.
+ *
+ * A file this database has NO row for at all is never deleted. That happens when the database was restored from
+ * an older backup (photos added since then have no row) or a different database points at the same folder (a
+ * local test setup): in both cases the files are someone's real photos, so they are left alone and reported.
  */
 function purgeUnreferenced({ now = Date.now(), maxAgeMs = ORPHAN_AGE_MS } = {}) {
   const rt = runtime.get();
@@ -247,18 +277,26 @@ function purgeUnreferenced({ now = Date.now(), maxAgeMs = ORPHAN_AGE_MS } = {}) 
   purgeFiles(released);
   result.media = released.length;
 
-  const owned = db.prepare('SELECT 1 FROM active_media WHERE id = ?');
+  const known = db.prepare('SELECT deleted_at FROM media WHERE id = ?');
+  let unknown = 0;
   for (const file of rt.store.list()) {
     if (file.mtimeMs >= cutoff) continue;
-    if (!file.temp && owned.get(file.id)) continue;
-    rt.store.removeFile(file.file); // a leftover temp file, or a file whose picture row is gone
+    if (file.temp) { rt.store.removeFile(file.file); result.files += 1; continue; } // an interrupted upload
+    const row = known.get(file.id);
+    if (!row) { unknown += 1; continue; } // not ours to judge: see above
+    if (!row.deleted_at) continue; // a live picture
+    rt.store.removeFile(file.file); // a picture this database deleted, whose file removal didn't happen
     result.files += 1;
   }
   if (result.media || result.files) logger.info('Photo sweep removed unused items', result);
+  if (unknown) {
+    logger.warn('Photo files with no record in this database were left untouched. If you restored a database backup, these are probably photos added after it was taken.', { files: unknown });
+  }
+  result.unknown = unknown;
   return result;
 }
 
 module.exports = {
-  requireConfigured, status, listAttachments, upload, openFile, detach, detachOwnerTypes, purgeFiles,
+  requireConfigured, status, listAttachments, upload, openFile, detach, detachOwnerTypes, detachOwner, moveAttachments, purgeFiles,
   collectUserMedia, eraseFiles, purgeUnreferenced, releaseMedia,
 };

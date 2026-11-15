@@ -638,23 +638,96 @@ function sweepChecks() {
   const foreignNested = path.join(dir, 'ab'); fs.mkdirSync(foreignNested, { recursive: true }); fs.writeFileSync(path.join(foreignNested, 'keep.txt'), 'not ours'); age(path.join(foreignNested, 'keep.txt'), 5 * DAY);
   const softDeletedWithFile = seedMedia(old); db.prepare('UPDATE media SET deleted_at = ? WHERE id = ?').run(old, softDeletedWithFile);
 
+  const logsBefore = logs.length;
   const result = media.purgeUnreferenced();
-  assert.deepEqual(result, { media: 1, files: 3 }, JSON.stringify(result));
+  assert.deepEqual(result, { media: 1, files: 2, unknown: 1 }, JSON.stringify(result));
   assert.equal(fs.existsSync(fileOf(unattachedOld)), false, 'old media nothing is attached to: removed');
   assert.ok(db.prepare('SELECT deleted_at FROM media WHERE id = ?').pluck().get(unattachedOld));
   assert.equal(fs.existsSync(fileOf(unattachedFresh)), true, 'a picture from the last day is left alone (upload may be mid-flight)');
   assert.equal(db.prepare('SELECT deleted_at FROM media WHERE id = ?').pluck().get(unattachedFresh), null);
   assert.equal(fs.existsSync(fileOf(attachedOld)), true, 'attached media is never swept');
-  assert.equal(fs.existsSync(fileOf(orphanOld)), false, 'old file with no row: removed');
+  // A file with no row at all is what a restored older backup (or another database on the same folder) looks
+  // like from here: those are real photos, so they are never deleted, only reported.
+  assert.equal(fs.existsSync(fileOf(orphanOld)), true, 'old file with no row: kept (could be a photo newer than a restored backup)');
+  assert.ok(logs.slice(logsBefore).some(([level, m, meta]) => level === 'warn' && /no record in this database/.test(m) && meta?.files === 1), 'and reported');
   assert.equal(fs.existsSync(fileOf(orphanFresh)), true, 'fresh file with no row: kept');
   assert.equal(fs.existsSync(tempOld), false); assert.equal(fs.existsSync(tempFresh), true);
   assert.equal(fs.existsSync(fileOf(softDeletedWithFile)), false, 'a file left behind by a soft-deleted picture is removed');
   assert.equal(fs.existsSync(foreign), true, 'files that are not ours are never touched');
   assert.equal(fs.existsSync(path.join(foreignNested, 'keep.txt')), true);
-  assert.deepEqual(media.purgeUnreferenced(), { media: 0, files: 0 }, 'idempotent');
-  // The same sweep a day later removes what was fresh.
-  assert.deepEqual(media.purgeUnreferenced({ now: Date.now() + 2 * DAY }), { media: 1, files: 2 });
+  assert.deepEqual(media.purgeUnreferenced(), { media: 0, files: 0, unknown: 1 }, 'idempotent');
+  // The same sweep a day later removes what was fresh, and still never touches the files it has no row for.
+  assert.deepEqual(media.purgeUnreferenced({ now: Date.now() + 2 * DAY }), { media: 1, files: 1, unknown: 2 });
+  assert.equal(fs.existsSync(fileOf(orphanFresh)), true);
+
+  // The restore scenario end to end: a live, attached photo whose rows the database no longer has.
+  const restored = seedMedia(old, { attach: true });
+  db.prepare('DELETE FROM attachments WHERE media_id = ?').run(restored);
+  db.prepare('DELETE FROM media WHERE id = ?').run(restored);
+  media.purgeUnreferenced({ now: Date.now() + 30 * DAY });
+  assert.equal(fs.existsSync(fileOf(restored)), true, 'a photo newer than a restored backup survives every sweep');
   worker.tick(); // the timer body: sweep + replica pass, non-fatal
+}
+
+// Photos on EMIs & bills and on capture inbox notes: ownership, sorting a note moves its photos to what it became,
+// dismissing it releases them, a sorted or dismissed note can't take new ones, and reset removes both kinds.
+async function newOwnerChecks() {
+  const { dir } = useRuntime();
+  const capture = require('../src/plugins/capture/capture.service');
+  const exists = (id) => fs.existsSync(path.join(dir, id.slice(0, 2), `${id}.sqm`));
+  const user = insertUser(db, { name: 'Owners user', email: 'media-owners@example.invalid', passwordHash: 'unused' });
+  seedDefaults(db, user);
+  const now = nowIso();
+  const addBill = (userId) => { const id = newId(); insertRow(db, 'commitments', { id, user_id: userId, kind: 'subscription', name: 'Synthetic bill', amount_paise: 49900, due_day: 5, start_date: '2026-01-01', created_at: now, updated_at: now }); return id; };
+  const put = (ownerType, ownerId, userId = user) => media.upload(userId, { ownerType, ownerId, buffer: freshJpeg() }).attachment;
+
+  // EMIs & bills.
+  const bill = addBill(user);
+  const billPhoto = put('commitment', bill);
+  assert.equal(media.listAttachments(user, { ownerType: 'commitment', ownerId: bill }).length, 1);
+  assert.throws(() => put('commitment', bill, b), /not found/, 'another account can’t attach to my bill');
+  assert.throws(() => media.listAttachments(b, { ownerType: 'commitment', ownerId: bill }), /not found/);
+
+  // A capture inbox note holds photos; sorting it into a payment moves them to that payment.
+  const note = capture.commit(user, { text: 'idea: frame this receipt' }).data.inbox[0];
+  const notePhoto = put('capture', note._id);
+  assert.equal((await media.openFile(user, notePhoto.mediaId)).buffer.length > 0, true, 'an inbox note’s photo can be viewed');
+  const sorted = capture.commit(user, { text: 'framing 1200 upi', inboxId: note._id }).data;
+  const tx = sorted.created.find((item) => item.type === 'transaction');
+  assert.equal(media.listAttachments(user, { ownerType: 'transaction', ownerId: tx.id }).map((x) => x.mediaId).join(), notePhoto.mediaId, 'the photo moved with the note');
+  assert.throws(() => media.listAttachments(user, { ownerType: 'capture', ownerId: note._id }), /not found/, 'a sorted note is no longer a place for photos');
+  assert.throws(() => put('capture', note._id), /not found/);
+  assert.ok(exists(notePhoto.mediaId));
+
+  // Sorting into a task works the same way; a note re-saved as a note keeps its photos.
+  const note2 = capture.commit(user, { text: 'something to do with this' }).data.inbox[0];
+  const photo2 = put('capture', note2._id);
+  capture.commit(user, { text: 'still not sure', inboxId: note2._id });
+  assert.equal(media.listAttachments(user, { ownerType: 'capture', ownerId: note2._id }).length, 1, 'still a note: photos stay');
+  const asTask = capture.commit(user, { text: 'todo: print this', inboxId: note2._id }).data;
+  const task = asTask.created.find((item) => item.type === 'task');
+  assert.equal(media.listAttachments(user, { ownerType: 'task', ownerId: task.id })[0].mediaId, photo2.mediaId);
+
+  // Dismissing a note throws its photos away (a photo still used elsewhere stays).
+  const note3 = capture.commit(user, { text: 'never mind this one' }).data.inbox[0];
+  const photo3 = put('capture', note3._id);
+  const sharedBytes = freshJpeg();
+  media.upload(user, { ownerType: 'capture', ownerId: note3._id, buffer: sharedBytes });
+  const keptForBill = media.upload(user, { ownerType: 'commitment', ownerId: bill, buffer: sharedBytes }).attachment;
+  assert.throws(() => capture.dismiss(b, note3._id), /not found/);
+  capture.dismiss(user, note3._id);
+  assert.equal(exists(photo3.mediaId), false, 'a dismissed note’s photo file is removed');
+  assert.ok(db.prepare('SELECT deleted_at FROM media WHERE id = ?').pluck().get(photo3.mediaId));
+  assert.equal(exists(keptForBill.mediaId), true, 'the same picture on a bill stays');
+
+  // Financial reset removes bill and inbox-note photos with the rest of the money data.
+  const note4 = capture.commit(user, { text: 'look at this later' }).data.inbox[0];
+  const photo4 = put('capture', note4._id);
+  await users.resetFinancialData(user);
+  assert.equal(exists(billPhoto.mediaId), false, 'bill photo removed on reset');
+  assert.equal(exists(keptForBill.mediaId), false);
+  assert.equal(exists(photo4.mediaId), false, 'inbox note photo removed on reset');
+  assert.equal(db.prepare("SELECT count(*) FROM active_attachments WHERE user_id = ? AND owner_type IN ('commitment', 'capture')").pluck().get(user), 0);
 }
 
 async function resetAndDeleteChecks() {
@@ -918,6 +991,7 @@ async function main() {
   await apiChecks();
   await quotaAndFailureChecks();
   sweepChecks();
+  await newOwnerChecks();
   await resetAndDeleteChecks();
   await s3Checks();
   await replicaChecks();

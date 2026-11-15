@@ -158,9 +158,10 @@ async function resetFinancialData(userId) {
     }
     seedDefaults(db, userId);
     db.prepare("UPDATE family_sync_jobs SET status = 'cancelled', updated_at = ? WHERE user_id = ?").run(now, userId);
-    // "Start fresh" also removes receipt photos on transactions and goals (the one deliberate exception to
-    // soft retention above: a photo is far more sensitive than a row). Task photos are not financial data.
-    return { archived, photos: media.detachOwnerTypes(db, userId, ['transaction', 'goal'], now) };
+    // "Start fresh" also removes receipt photos on transactions, goals, EMIs & bills and capture inbox notes (the
+    // one deliberate exception to soft retention above: a photo is far more sensitive than a row). Task photos are
+    // not financial data.
+    return { archived, photos: media.detachOwnerTypes(db, userId, ['transaction', 'goal', 'commitment', 'capture'], now) };
   })();
   media.purgeFiles(result.photos); // files go only after the database change has committed
   delete result.photos;
