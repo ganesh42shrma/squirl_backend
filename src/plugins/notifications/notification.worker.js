@@ -4,9 +4,11 @@ const logger = require('../../core/logger');
 const { readSettings } = require('../tasks/settings');
 const { remindersFor } = require('./reminders');
 const service = require('./notification.service');
+const payments = require('./payment-prompts');
 
 let timer = null;
 let running = null;
+let nudged = false;
 
 async function runOnce(now = new Date()) {
   if (!service.ready()) return;
@@ -24,6 +26,7 @@ async function runOnce(now = new Date()) {
         continue;
       }
       const messages = await remindersFor(db, row.user_id, JSON.parse(row.preferences), readSettings(db, row.user_id), now);
+      if (JSON.parse(row.preferences).smsPayments !== false) messages.push(...payments.pending(db, row, now));
       for (const { key, ...message } of messages) {
         // A user can disable this device while a push request is in flight.
         if (!db.prepare('SELECT 1 FROM push_subscriptions WHERE id = ?').get(row.id)) break;
@@ -54,8 +57,12 @@ async function runOnce(now = new Date()) {
 }
 
 function tick() {
-  if (!running) running = runOnce().catch(() => logger.warn('Notification scan will retry')).finally(() => { running = null; });
+  if (!running) running = runOnce().catch(() => logger.warn('Notification scan will retry')).finally(() => {
+    running = null;
+    if (nudged && timer) { nudged = false; tick(); }
+  });
 }
+function nudge() { if (timer) { if (running) nudged = true; else tick(); } }
 function startNotificationWorker() {
   if (timer || !service.ready()) return;
   timer = setInterval(tick, 60_000);
@@ -63,7 +70,7 @@ function startNotificationWorker() {
   tick();
 }
 async function stopNotificationWorker() {
-  clearInterval(timer); timer = null;
+  clearInterval(timer); timer = null; nudged = false;
   await running;
 }
-module.exports = { runOnce, startNotificationWorker, stopNotificationWorker };
+module.exports = { runOnce, nudge, startNotificationWorker, stopNotificationWorker };

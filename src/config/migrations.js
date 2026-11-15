@@ -710,4 +710,17 @@ module.exports = [
       CREATE INDEX sms_events_hash ON sms_events(user_id, message_hash) WHERE deleted_at IS NULL;
     `);
   },
+  // v21: one durable purpose prompt per newly captured SMS payment.
+  `
+  CREATE TABLE payment_prompts (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    transaction_id TEXT NOT NULL UNIQUE REFERENCES transactions(id) ON DELETE CASCADE,
+    generation INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    answered_at TEXT,
+    answer TEXT
+  );
+  CREATE INDEX payment_prompts_user ON payment_prompts(user_id, created_at);
+  `,
 ];

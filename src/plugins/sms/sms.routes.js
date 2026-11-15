@@ -12,7 +12,9 @@ ingestRouter.post('/ingest', (req, res, next) => {
   next();
 }, validate(schemas.ingest), async (req, res) => {
   await rateLimit.hit(`sms-ingest:${req.smsDevice.id}`, { limit: 120, windowSec: 60 });
-  sendSuccess(res, service.ingest(req.smsDevice, req.body));
+  const result = service.ingest(req.smsDevice, req.body);
+  require('../notifications/notification.worker').nudge();
+  sendSuccess(res, result);
 });
 
 // Management and review inherit the ordinary session and CSRF guards.
@@ -29,6 +31,10 @@ router.get('/events', validate(schemas.list), (req, res) => {
   const { items, meta } = service.listEvents(req.user.id, req.query);
   sendSuccess(res, { items }, { meta });
 });
-router.post('/events/:id/confirm', validate(schemas.confirm), (req, res) => sendSuccess(res, service.reviewEvent(req.user.id, req.params.id, req.body)));
+router.post('/events/:id/confirm', validate(schemas.confirm), (req, res) => {
+  const result = service.reviewEvent(req.user.id, req.params.id, req.body);
+  require('../notifications/notification.worker').nudge();
+  sendSuccess(res, result);
+});
 router.post('/events/:id/dismiss', validate(schemas.eventId), (req, res) => sendSuccess(res, service.reviewEvent(req.user.id, req.params.id)));
 module.exports = { router, ingestRouter };

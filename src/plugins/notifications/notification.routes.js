@@ -4,9 +4,15 @@ const { sendSuccess } = require('../../core/response');
 const rateLimit = require('../../core/rateLimit');
 const schemas = require('./notification.validation');
 const service = require('./notification.service');
+const payments = require('./payment-prompts');
 
 const router = Router();
 router.use((req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
+router.get('/payments/:id', validate(schemas.payment), async (req, res) => sendSuccess(res, await payments.get(req.user.id, req.params.id)));
+router.post('/payments/:id/reply', validate(schemas.paymentReply), async (req, res) => {
+  await rateLimit.hit(`payment-reply:${req.user.id}`, { limit: 120, windowSec: 60 });
+  sendSuccess(res, await payments.reply(req.user.id, req.params.id, req.body.note));
+});
 router.post('/status', validate(schemas.device), (req, res) => {
   sendSuccess(res, service.deviceStatus(req.user.id, req.sessionID, req.body.endpoint));
 });

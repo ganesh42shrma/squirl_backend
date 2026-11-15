@@ -88,6 +88,7 @@ function processParsed(db, event, parsed) {
     if (archived) return { status: 'ignored', reason: 'transaction_deleted' };
     doc.category = categoryFor(db, event.user_id, doc);
     transactionId = insertTransaction(db, event.user_id, doc);
+    require('../notifications/payment-prompts').record(db, event.user_id, transactionId);
     status = 'captured';
   }
   // Save evidence before transfer pairing so a later statement can retain the SMS provenance.

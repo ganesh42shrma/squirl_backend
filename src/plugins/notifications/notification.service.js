@@ -4,14 +4,14 @@ const { getDb } = require('../../config/db');
 const { newId, nowIso } = require('../../core/sql');
 const AppError = require('../../core/AppError');
 
-const DEFAULT_PREFERENCES = { tasks: true, habits: true, bills: true, dailyTime: '09:00', habitTime: '20:00' };
+const DEFAULT_PREFERENCES = { tasks: true, habits: true, bills: true, smsPayments: true, dailyTime: '09:00', habitTime: '20:00' };
 const ready = () => Boolean(config.push.publicKey && config.push.privateKey && config.push.subject);
 
 function deviceStatus(userId, sessionId, endpoint) {
   const db = getDb();
   const row = db.prepare(`SELECT p.preferences FROM push_subscriptions p JOIN users u ON u.id = p.user_id
     WHERE p.user_id = ? AND p.session_id = ? AND p.endpoint = ? AND p.password_changed_at = u.password_changed_at`).get(userId, sessionId, endpoint || '');
-  return { ready: ready(), publicKey: config.push.publicKey, enabled: Boolean(row), preferences: row ? JSON.parse(row.preferences) : DEFAULT_PREFERENCES };
+  return { ready: ready(), publicKey: config.push.publicKey, enabled: Boolean(row), preferences: { ...DEFAULT_PREFERENCES, ...(row && JSON.parse(row.preferences)) } };
 }
 
 function subscribe(userId, sessionId, passwordChangedAt, { subscription, preferences }) {

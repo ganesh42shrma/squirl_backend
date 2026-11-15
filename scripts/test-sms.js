@@ -16,7 +16,7 @@ const RealDate = Date;
 let clock = RealDate.parse('2026-11-15T08:00:00Z');
 global.Date = class extends RealDate { constructor(...args) { super(...(args.length ? args : [clock])); } static now() { return clock; } };
 const migrations = require('../src/config/migrations');
-for (const m of migrations.slice(0, -1)) typeof m === 'function' ? m(db) : db.exec(m);
+for (const m of migrations.slice(0, 19)) typeof m === 'function' ? m(db) : db.exec(m);
 const { insertUser } = require('../src/plugins/users/user.model');
 const { seedDefaults } = require('../src/plugins/users/defaults');
 const { insertTransaction, addTags } = require('../src/plugins/transactions/transaction.model');
@@ -28,11 +28,12 @@ const before = insertTransaction(db, a, { date: '2026-01-01', description: 'Reta
 db.prepare('UPDATE transactions SET rowid = 75 WHERE id = ?').run(before);
 const beforeRow = db.prepare('SELECT rowid, * FROM transactions WHERE id = ?').get(before);
 const oldIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'transactions' AND sql IS NOT NULL").pluck().all();
-db.transaction(() => migrations.at(-1)(db))();
+db.transaction(() => migrations[19](db))();
 assert.deepEqual(db.prepare('SELECT rowid, * FROM transactions WHERE id = ?').get(before), { ...beforeRow, transfer_id: null });
 assert.equal(db.prepare('SELECT count(*) FROM transaction_tags WHERE transaction_id = ?').pluck().get(before), 1);
 assert.deepEqual(db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'transactions' AND sql IS NOT NULL").pluck().all(), oldIndexes);
 db.pragma('foreign_keys = ON');
+for (const m of migrations.slice(20)) typeof m === 'function' ? m(db) : db.exec(m);
 const sms = require('../src/plugins/sms/sms.service');
 const schemas = require('../src/plugins/sms/sms.validation');
 const { parseSms } = require('../src/plugins/sms/sms.parser');
@@ -136,7 +137,9 @@ async function main() {
   assert.equal((await upload('sbi', [statementRow(1)])).stats.reconciled, 1);
 
   const beforeSms = await upload('sbi', [statementRow(10)]);
+  const promptCount = db.prepare('SELECT count(*) FROM payment_prompts').pluck().get();
   const late = deliver(sbi(10));
+  assert.equal(db.prepare('SELECT count(*) FROM payment_prompts').pluck().get(), promptCount, 'an already-recorded statement payment does not trigger a new-payment prompt');
   assert.equal(late.status, 'reconciled', 'statement before SMS attaches evidence without a new ledger row');
   assert.equal(row(late.transactionId).import_id, beforeSms._id);
   await imports.deleteImport(a, beforeSms._id);
@@ -235,6 +238,7 @@ async function httpChecks(token) {
   app.use(requireAuth);
   app.use('/api/sms', routes.router);
   app.use('/api/transactions', require('../src/plugins/transactions/transaction.routes'));
+  app.use('/api/notifications', require('../src/plugins/notifications/notification.routes'));
   app.use(require('../src/core/errorHandler'));
   const server = await new Promise((resolve, reject) => {
     const s = require('node:http').createServer(app);
@@ -255,6 +259,17 @@ async function httpChecks(token) {
     assert.equal((await request('/sms/ingest', { method: 'POST', headers: bridge, body: { ...input(sbi(61)), userId: b } })).status, 400);
     for (const path of ['/sms/accounts', '/sms/devices', '/sms/events', '/transactions']) assert.equal((await request(path, { headers: bridge })).status, 401, 'bridge token cannot read account data');
     const browser = { 'X-Synthetic-User': a, 'X-Requested-With': 'squirl' };
+    const payment = db.prepare('SELECT id FROM payment_prompts WHERE user_id = ? ORDER BY rowid DESC LIMIT 1').get(a).id;
+    const paymentPath = `/notifications/payments/${payment}`;
+    assert.equal((await request(paymentPath, { headers: bridge })).status, 401);
+    assert.equal((await request(`${paymentPath}/reply`, { method: 'POST', headers: bridge, body: { note: 'No browser session' } })).status, 401);
+    assert.equal((await request(paymentPath, { headers: { 'X-Synthetic-User': b } })).status, 404);
+    assert.equal((await request(`${paymentPath}/reply`, { method: 'POST', headers: { 'X-Synthetic-User': a }, body: { note: 'No CSRF' } })).status, 403);
+    for (const body of [{ note: '' }, { note: 'x'.repeat(501) }, { note: 'Valid note', userId: b }])
+      assert.equal((await request(`${paymentPath}/reply`, { method: 'POST', headers: browser, body })).status, 400);
+    assert.equal((await request(paymentPath, { headers: browser })).status, 200);
+    for (let i = 0; i < 2; i++) assert.equal((await request(`${paymentPath}/reply`, { method: 'POST', headers: browser, body: { note: 'Lunch' } })).status, 200);
+    assert.equal((await request(`${paymentPath}/reply`, { method: 'POST', headers: browser, body: { note: 'Other note' } })).status, 409);
     assert.equal((await request('/sms/accounts', { headers: browser })).status, 200);
     assert.equal((await request('/sms/devices', { method: 'POST', headers: browser, body: { name: 'Paired by session' } })).status, 201);
   } finally { await new Promise((resolve) => server.close(resolve)); }

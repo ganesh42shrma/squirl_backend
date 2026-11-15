@@ -166,3 +166,43 @@ poll SMS ingestion; reload/refetch the ledger to see a newly submitted event.
 
 Run `npm run test:sms`. It uses fictional messages, an in-memory database and a temporary loopback
 HTTP server, with no external requests, real SMS, production keys, or real database access.
+
+## New-payment push and purpose notes
+
+Migration v21 adds one durable prompt per newly captured SMS ledger payment, in the same transaction
+as the payment. Unknown/review-only alerts, duplicate SMS, and messages matched to an already-present
+statement do not generate new-payment prompts. Explicitly confirming a review event generates a
+prompt if it creates a new ledger payment. A later statement import preserves the payment ID and note.
+
+The existing notification worker is nudged after ingestion/confirmation and retains its minute scan,
+session/password checks, per-device delivery receipts, retry backoff, and expired-subscription cleanup.
+It sends unanswered prompts from the last 24 hours, created after that push subscription was
+enabled, while their payment remains active and their financial generation is current. An existing
+note or an answered prompt suppresses further sends. New-payment delivery defaults on for already
+enabled push devices; **Profile → This device → New SMS payments** can disable it on one device.
+No historical prompts are created by this migration.
+
+The push contains only a kind, opaque prompt ID, and tag. Lock-screen text hides names, amounts,
+account endings, and notes. Chrome Android's text **Add note** action submits through the ordinary
+PWA session with the CSRF header; a native SMS token cannot read payments or save notes. Tapping the
+notification (or a browser without inline reply) opens the ledger’s **What was this for?** form.
+
+- `GET /api/notifications/payments/:id`: owner-only active payment details and `answeredAt`.
+- `POST /api/notifications/payments/:id/reply`, body `{ "note": "Lunch" }`: appends a 1–500 character
+  note to existing notes, up to the ledger's 1,000 character limit. Bank narration/facts stay unchanged.
+  Identical retries are idempotent; a different second answer returns 409 and can be edited in the
+  ledger. Deleted/reset/other-owner prompts are unavailable.
+
+If an inline save fails (including Tailscale disconnection or an expired session), the worker shows
+**Note not saved** and retains the typed draft in that device's notification data for **Retry saving**.
+It does not put the draft in a URL or public shell cache. Dismissing that notification loses the
+unsent draft. Open Squirl and sign in if necessary before retrying; no save is claimed on failure.
+
+Deploy both backend and frontend, rebuild the frontend with `npm run build`, then run
+`systemctl --user restart squirl.service` on Linux to apply migration v21 and load the new code.
+Close all Squirl windows/tabs and reopen once to install the updated service worker; if the previous
+worker was still active on that visit, close and reopen once more. The Android SMS APK is unchanged.
+
+Run `npm run test:payment-prompts`, `npm run test:notifications`, and `npm run test:sms` in the backend;
+after building the frontend, run `npm run test:pwa`. Real Pixel inline replies, lock-screen behavior,
+and delivery through the deployed Tailscale connection still require a physical-device check.

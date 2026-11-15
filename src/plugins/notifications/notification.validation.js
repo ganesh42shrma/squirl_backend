@@ -1,4 +1,5 @@
 const { z } = require('zod');
+const { idParams } = require('../../core/schemas');
 
 // Never allow a saved push endpoint to become an arbitrary server-side HTTP request.
 const PUSH_HOSTS = new Set(['fcm.googleapis.com', 'updates.push.services.mozilla.com', 'web.push.apple.com']);
@@ -15,6 +16,7 @@ const preferences = z.object({
   tasks: z.boolean().default(true),
   habits: z.boolean().default(true),
   bills: z.boolean().default(true),
+  smsPayments: z.boolean().default(true),
   dailyTime: time.default('09:00'),
   habitTime: time.default('20:00'),
 });
@@ -24,4 +26,6 @@ const subscribe = z.object({ body: z.object({
   preferences,
 }) });
 const byEndpoint = z.object({ body: z.object({ endpoint }) });
-module.exports = { device, subscribe, byEndpoint };
+const payment = z.object({ params: idParams });
+const paymentReply = z.object({ params: idParams, body: z.object({ note: z.string().trim().min(1).max(500) }).strict() });
+module.exports = { device, subscribe, byEndpoint, payment, paymentReply };

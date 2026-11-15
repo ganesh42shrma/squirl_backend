@@ -26,7 +26,8 @@
     "test:private-serving": "node scripts/test-private-serving.js",
     "test:commitments": "node scripts/test-commitments.js",
     "test:quotes": "node scripts/test-quotes.js",
-    "test:sms": "node scripts/test-sms.js"
+    "test:sms": "node scripts/test-sms.js",
+    "test:payment-prompts": "node scripts/test-payment-prompts.js"
   },
   "engines": {
     "node": ">=22.12"
