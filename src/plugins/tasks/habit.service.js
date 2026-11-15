@@ -179,6 +179,21 @@ function undoCheckIn(ctx, id, date) {
   return viewOf(ctx, synced);
 }
 
+/**
+ * Puts a day's logged quantity back to an earlier value (Quick Capture undoing a repeat check-in). Falling
+ * back under the target takes that day's XP back, and the streak is re-evaluated, exactly like undoCheckIn.
+ */
+function restoreQuantity(ctx, id, date, quantity) {
+  const { db, userId, clock, events } = ctx;
+  const row = findHabitRow(db, userId, id);
+  db.prepare("UPDATE habit_checkins SET quantity = ? WHERE habit_id = ? AND date = ? AND kind = 'done'").run(quantity ?? null, id, date);
+  const checkin = db.prepare("SELECT kind, quantity FROM habit_checkins WHERE habit_id = ? AND date = ? AND kind = 'done'").get(id, date);
+  if (!isDayDone(row, checkin)) progress.reverseXp(db, userId, `habit:${id}:${date}`, events);
+  const synced = syncHabit(ctx, findHabitRow(db, userId, id));
+  progress.settle(db, userId, clock.today, events);
+  return viewOf(ctx, synced);
+}
+
 function bindEcho(ctx, id) {
   const { db, userId, clock, events } = ctx;
   const synced = syncHabit(ctx, findHabitRow(db, userId, id));
@@ -204,4 +219,4 @@ function syncAllHabits(ctx) {
   for (const row of ctx.db.prepare('SELECT * FROM active_habits WHERE user_id = ? AND archived_at IS NULL').all(ctx.userId)) syncHabit(ctx, row);
 }
 
-module.exports = { listHabits, getHabit, createHabit, updateHabit, archiveHabit, deleteHabit, checkIn, undoCheckIn, bindEcho, history, syncHabit, syncAllHabits, findHabitRow, checkinsFor, QUEST_SLOTS };
+module.exports = { GRACE_DAYS, listHabits, getHabit, createHabit, updateHabit, archiveHabit, deleteHabit, checkIn, undoCheckIn, restoreQuantity, bindEcho, history, syncHabit, syncAllHabits, findHabitRow, checkinsFor, QUEST_SLOTS };

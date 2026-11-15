@@ -18,6 +18,50 @@ function matches(db, userId, doc, { includeDeleted = false } = {}) {
   return rows.filter((r) => upiRef(r) === upiRef(doc));
 }
 
+const dayOf = (doc) => (doc.date instanceof Date ? doc.date.toISOString().slice(0, 10) : doc.date);
+
+/**
+ * Rows Quick Capture created ("chai 40" typed before the bank's SMS arrived) that this SMS payment is
+ * probably the same as: same person, direction and amount, a day either side, not archived, not yet tied
+ * to any SMS. Only rows with a capture_id qualify, so hand-typed ledger rows are never touched, and a
+ * payment typed as cash never qualifies (cash has no bank message). When several qualify, the one on the
+ * SMS's own day wins, then the one in the same account, so two ₹40 chais on two days pair up correctly.
+ */
+function capturedMatches(db, userId, doc) {
+  const rows = db.prepare(`SELECT * FROM active_transactions t WHERE t.user_id = ? AND t.source = 'manual' AND t.capture_id IS NOT NULL
+    AND t.transfer_id IS NULL AND t.type = ? AND t.amount_paise = ? AND t.date BETWEEN date(?, '-1 day') AND date(?, '+1 day')
+    AND COALESCE(t.payment_mode, '') != 'cash'
+    AND NOT EXISTS (SELECT 1 FROM sms_events e WHERE e.transaction_id = t.id AND e.user_id = t.user_id AND e.deleted_at IS NULL)`)
+    .all(userId, doc.type, toPaise(doc.amount), dayOf(doc), dayOf(doc));
+  return narrow(rows, [(r) => r.date === dayOf(doc), (r) => r.account === doc.account]);
+}
+
+/** Applies each preference in turn, but only while it leaves at least one row: never narrows to nothing. */
+function narrow(rows, preferences) {
+  let left = rows;
+  for (const prefer of preferences) {
+    if (left.length < 2) break;
+    const kept = left.filter(prefer);
+    if (kept.length) left = kept;
+  }
+  return left;
+}
+
+/**
+ * The bank's facts win (it becomes an SMS row with the real account, date, UPI reference and mode); the
+ * person's own description, category, tags and notes stay exactly as they wrote them.
+ */
+function mergeIntoCaptured(db, userId, row, doc) {
+  updateRow(db, 'transactions', row.id, {
+    source: 'sms', account: doc.account, date: dayOf(doc), ref_no: doc.refNo || upiRef(doc) || row.ref_no,
+    payment_mode: doc.paymentMode || row.payment_mode, description_kept: 1, updated_at: nowIso(),
+  });
+}
+
+// A row's description is the person's own words when an SMS was merged into their Quick Capture row.
+// (A bank row they merely annotated keeps the bank's wording, so statements may reword that one.)
+const keepsPersonalDescription = (db, userId, row) => row.description_kept === 1;
+
 function relatedPayments(db, userId, doc) {
   const ref = upiRef(doc);
   if (!ref) return [];
@@ -67,7 +111,7 @@ function reconcileStatement(db, userId, doc, ambiguous = false) {
   const row = candidates[0];
   updateRow(db, 'transactions', row.id, {
     date: doc.date instanceof Date ? doc.date.toISOString().slice(0, 10) : doc.date,
-    description: doc.description, amount_paise: toPaise(doc.amount), type: doc.type,
+    description: keepsPersonalDescription(db, userId, row) ? row.description : doc.description, amount_paise: toPaise(doc.amount), type: doc.type,
     source: 'import', import_id: doc.importId, ref_no: doc.refNo || upiRef(doc), hash: doc.hash,
     balance_paise: toPaise(doc.balance), updated_at: nowIso(),
   });
@@ -79,13 +123,15 @@ function reconcileStatement(db, userId, doc, ambiguous = false) {
 
 // Undoing a statement must retain payments that were already captured independently by SMS.
 function restoreSmsForImport(db, userId, importId) {
-  const rows = db.prepare(`SELECT t.id, e.parsed FROM active_transactions t JOIN sms_events e ON e.transaction_id = t.id
+  const rows = db.prepare(`SELECT t.id, t.description, t.description_kept, e.parsed FROM active_transactions t JOIN sms_events e ON e.transaction_id = t.id
     WHERE t.user_id = ? AND t.import_id = ? AND e.user_id = ? AND e.deleted_at IS NULL AND e.parsed IS NOT NULL GROUP BY t.id`)
     .all(userId, importId, userId);
   for (const row of rows) {
     const parsed = JSON.parse(row.parsed);
+    // Words the person wrote on a captured row survive the statement coming and going.
+    const personal = row.description_kept === 1;
     updateRow(db, 'transactions', row.id, { source: 'sms', import_id: null, hash: null, balance_paise: null,
-      description: parsed.description, ref_no: parsed.refNo, updated_at: nowIso() });
+      description: personal ? row.description : parsed.description, ref_no: parsed.refNo, updated_at: nowIso() });
     db.prepare("UPDATE sms_events SET status = 'captured', updated_at = ? WHERE user_id = ? AND transaction_id = ? AND deleted_at IS NULL AND status != 'dismissed'")
       .run(nowIso(), userId, row.id);
   }
@@ -93,4 +139,4 @@ function restoreSmsForImport(db, userId, importId) {
 }
 
 const identity = (doc) => [doc.account, doc.date instanceof Date ? doc.date.toISOString().slice(0, 10) : doc.date, toPaise(doc.amount), doc.type, upiRef(doc)].join('|');
-module.exports = { upiRef, matches, relatedPayments, identity, linkTransfer, reconcileStatement, restoreSmsForImport };
+module.exports = { upiRef, matches, narrow, capturedMatches, mergeIntoCaptured, relatedPayments, identity, linkTransfer, reconcileStatement, restoreSmsForImport };

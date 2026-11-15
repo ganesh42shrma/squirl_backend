@@ -101,6 +101,8 @@ function insertTransaction(db, userId, data) {
     ref_no: data.refNo?.trim() || null,
     balance_paise: toPaise(data.balance),
     hash: data.hash ?? null,
+    // Set by Quick Capture only (the ledger API never passes it). Left out when unset, so older schemas still insert.
+    ...(data.captureId && { capture_id: data.captureId }),
     auto_categorized: data.autoCategorized ? 1 : 0,
     created_at: now,
     updated_at: now,

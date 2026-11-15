@@ -3,6 +3,7 @@ const { dayKey } = require('../tasks/day');
 const { clockFor } = require('../tasks/settings');
 const { periodFor, targetFor, isScheduled, isDayDone } = require('../tasks/streak.engine');
 const commitments = require('../commitments/commitment.service');
+const { inboxSummary } = require('../capture/capture.service');
 
 // Short text for a notification. Push payloads are end-to-end encrypted; the service worker still caps lengths.
 const clip = (text, max = 60) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text);
@@ -61,6 +62,11 @@ async function remindersFor(db, userId, preferences, settings, now = new Date())
       add('bills', `bills:${calendarDay}`, { count: alerts.length, name: clip(first.name, 40), amount: first.amount || 0,
         missed: first.type === 'missed', daysUntil: first.daysUntil ?? 0 });
     }
+  }
+  // Unsorted Quick Capture notes. Devices saved before this option existed get it on by default.
+  if (preferences.captures !== false && clock >= preferences.dailyTime) {
+    const { count, first } = inboxSummary(db, userId);
+    if (count) add('captures', `captures:${calendarDay}`, { count, first: clip(first, 50) });
   }
   return messages;
 }

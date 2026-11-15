@@ -5,7 +5,7 @@ const { insertRow, updateRow, newId, nowIso } = require('../../core/sql');
 const { insertTransaction, addTags, getTags } = require('../transactions/transaction.model');
 const { categoryFor } = require('../rules/rules.service');
 const { parseSms, normalize } = require('./sms.parser');
-const { matches, relatedPayments, linkTransfer } = require('./sms.reconcile');
+const { matches, capturedMatches, mergeIntoCaptured, relatedPayments, linkTransfer } = require('./sms.reconcile');
 
 // "JM-KOTAKB-S" -> "KOTAKB": the 2-letter operator/circle prefix and 1-letter type suffix vary by
 // network, so only the DLT header identifies the bank. Mirrors BankFilter.header() on the phone.
@@ -92,9 +92,17 @@ function processParsed(db, event, parsed) {
   } else {
     const archived = matches(db, event.user_id, doc, { includeDeleted: true }).find((r) => r.source === 'sms' && r.deleted_at);
     if (archived) return { status: 'ignored', reason: 'transaction_deleted' };
-    doc.category = categoryFor(db, event.user_id, doc);
-    transactionId = insertTransaction(db, event.user_id, doc);
-    require('../notifications/payment-prompts').record(db, event.user_id, transactionId);
+    // The person may already have typed this payment into Quick Capture. Exactly one such row → it is the
+    // same payment: merge, and don't ask what it was for (they just told us). Several → can't tell, so add a row.
+    const typed = capturedMatches(db, event.user_id, doc);
+    if (typed.length === 1) {
+      transactionId = typed[0].id;
+      mergeIntoCaptured(db, event.user_id, typed[0], doc);
+    } else {
+      doc.category = categoryFor(db, event.user_id, doc);
+      transactionId = insertTransaction(db, event.user_id, doc);
+      require('../notifications/payment-prompts').record(db, event.user_id, transactionId);
+    }
     status = 'captured';
   }
   // Save evidence before transfer pairing so a later statement can retain the SMS provenance.

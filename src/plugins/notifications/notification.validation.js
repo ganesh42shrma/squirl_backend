@@ -17,6 +17,7 @@ const preferences = z.object({
   habits: z.boolean().default(true),
   bills: z.boolean().default(true),
   smsPayments: z.boolean().default(true),
+  captures: z.boolean().default(true),
   details: z.boolean().default(true),
   dailyTime: time.default('09:00'),
   habitTime: time.default('20:00'),

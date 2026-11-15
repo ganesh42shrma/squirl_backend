@@ -4,7 +4,7 @@ const { getDb } = require('../../config/db');
 const { newId, nowIso } = require('../../core/sql');
 const AppError = require('../../core/AppError');
 
-const DEFAULT_PREFERENCES = { tasks: true, habits: true, bills: true, smsPayments: true, details: true, dailyTime: '09:00', habitTime: '20:00' };
+const DEFAULT_PREFERENCES = { tasks: true, habits: true, bills: true, smsPayments: true, captures: true, details: true, dailyTime: '09:00', habitTime: '20:00' };
 const ready = () => Boolean(config.push.publicKey && config.push.privateKey && config.push.subject);
 
 function deviceStatus(userId, sessionId, endpoint) {

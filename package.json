@@ -28,6 +28,7 @@
     "test:goals": "node scripts/test-goals.js",
     "test:feeds": "node scripts/test-feeds.js",
     "test:tasks": "node scripts/test-tasks.js",
+    "test:capture": "node scripts/test-capture.js",
     "push:keys": "node scripts/push-keys.js",
     "test:notifications": "node scripts/test-notifications.js",
     "test:private-serving": "node scripts/test-private-serving.js",
