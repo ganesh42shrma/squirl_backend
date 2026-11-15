@@ -19,10 +19,16 @@
     "test:ledger-pagination": "node scripts/test-ledger-pagination.js",
     "test:summary": "node scripts/test-summary.js",
     "test:goals": "node scripts/test-goals.js",
-    "test:feeds": "node scripts/test-feeds.js"
+    "test:feeds": "node scripts/test-feeds.js",
+    "test:tasks": "node scripts/test-tasks.js",
+    "push:keys": "node scripts/push-keys.js",
+    "test:notifications": "node scripts/test-notifications.js",
+    "test:private-serving": "node scripts/test-private-serving.js",
+    "test:commitments": "node scripts/test-commitments.js",
+    "test:quotes": "node scripts/test-quotes.js"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.6.0",
@@ -38,6 +44,7 @@
     "multer": "^2.4.0",
     "openai": "^7.54.0",
     "redis": "^6.3.1",
+    "web-push": "^4.0.0",
     "winston": "^3.19.0",
     "zod": "^4.6.7"
   }

@@ -387,3 +387,10 @@ would stop re-imported statements from being recognised as duplicates.
 - **`logs/error.log`:** errors only.
 
 Every request is logged as `METHOD url status durationMs` with its `requestId`. 4xx responses log at `warn` and 5xx at `error`, with the stack.
+
+## Private Android app
+
+See [the Linux desktop and Android setup guide](deployment/MOBILE.md) for Tailscale HTTPS,
+serving the frontend and API together, push reminders, and automatic startup.
+Run `npm run test:notifications` and `npm run test:private-serving` (after building the frontend)
+to check the new setup with synthetic data.

@@ -20,5 +20,7 @@ router.use('/commitments', require('./commitments/commitment.routes'));
 router.use('/goals', require('./goals/goal.routes'));
 router.use('/ai', require('./ai/ai.routes'));
 router.use('/feeds', require('./feeds/feeds.routes'));
+router.use('/tasks', require('./tasks/task.routes'));
+router.use('/notifications', require('./notifications/notification.routes'));
 
 module.exports = router;

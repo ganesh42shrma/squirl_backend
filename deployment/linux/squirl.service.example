@@ -1,0 +1,18 @@
+[Unit]
+Description=Squirl private web app and reminder worker
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# Replace these two absolute paths. Find Node with: command -v node
+WorkingDirectory=/ABSOLUTE/PATH/TO/squirl/squirl_backend
+ExecStart=/ABSOLUTE/PATH/TO/node src/server.js
+Environment=NODE_ENV=production
+UMask=0077
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=15
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

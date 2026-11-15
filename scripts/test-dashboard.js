@@ -48,6 +48,24 @@ async function main() {
   await service.updateProfile(a, { dashboardConfig: config });
   assert.deepEqual((await service.getProfile(a)).dashboardConfig, config);
   assert.equal((await service.getProfile(b)).dashboardConfig, null);
+  // v2: ordered widget instances from any module; ids are not enumerated by the backend.
+  const v2 = { version: 2, items: [
+    { key: 'k1', widget: 'finance.balance', size: 'l', settings: { period: '6m', account: 'all' } },
+    { key: 'k2', widget: 'tasks.hunterCard', size: 's', settings: {} },
+    { key: 'k3', widget: 'goals.progress', size: 'm', settings: { goalId: 'abc', showChart: true, limit: 3, note: null } },
+  ] };
+  assert.equal(schema.safeParse({ body: { dashboardConfig: v2 } }).success, true);
+  assert.equal(schema.safeParse({ body: { dashboardConfig: { version: 2, items: [] } } }).success, true, 'an empty board is allowed');
+  for (const bad of [
+    { ...v2, items: [v2.items[0], { ...v2.items[1], key: 'k1' }] },
+    { ...v2, items: [{ ...v2.items[0], widget: 'no-module' }] },
+    { ...v2, items: [{ ...v2.items[0], size: 'xl' }] },
+    { ...v2, items: [{ ...v2.items[0], settings: { nested: { a: 1 } } }] },
+    { ...v2, items: Array.from({ length: 41 }, (_, i) => ({ ...v2.items[0], key: `k${i}` })) },
+  ]) assert.equal(schema.safeParse({ body: { dashboardConfig: bad } }).success, false);
+  await service.updateProfile(a, { dashboardConfig: v2 });
+  assert.deepEqual((await service.getProfile(a)).dashboardConfig, v2);
+  await service.updateProfile(a, { dashboardConfig: config });
   const range = { from: '2026-10-01', to: '2026-10-31', account: 'sbi' };
   const history = await insights.getHistory(a, range);
   assert.equal(history.totals.spent, 80, 'refunds reduce spending');

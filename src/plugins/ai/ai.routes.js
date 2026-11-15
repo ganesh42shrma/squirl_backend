@@ -9,5 +9,6 @@ router.get('/settings', controller.getSettings);
 router.patch('/settings', validate(schemas.update), controller.updateSettings);
 router.get('/models', validate(schemas.models), controller.models);
 router.post('/test', validate(schemas.test), controller.test);
+router.post('/quote', validate(schemas.quote), controller.quote);
 
 module.exports = router;

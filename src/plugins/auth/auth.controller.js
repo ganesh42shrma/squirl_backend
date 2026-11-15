@@ -102,6 +102,7 @@ async function resetPassword(req, res) {
 }
 
 function logout(req, res) {
+  require('../notifications/notification.service').removeSession(req.sessionID);
   req.session.destroy(() => {
     res.clearCookie('squirl.sid');
     sendSuccess(res, null, { message: 'Signed out' });

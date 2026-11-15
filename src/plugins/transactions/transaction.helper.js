@@ -1,5 +1,13 @@
 const { toPaise, fromPaise, placeholders } = require('../../core/sql');
 
+const SEARCH_COLUMNS = {
+  all: ['t.description', "ifnull(t.notes, '')", "ifnull(t.ref_no, '')"],
+  description: ['t.description'],
+  notes: ["ifnull(t.notes, '')"],
+  ref: ["ifnull(t.ref_no, '')"],
+};
+const SEARCH_SCOPES = Object.keys(SEARCH_COLUMNS);
+
 const SORT_COLUMNS = {
   date: 't.date',
   amount: 't.amount_paise',
@@ -41,15 +49,14 @@ function buildFilter(userId, query = {}, categoryIds) {
   if (query.minAmount !== undefined) add('t.amount_paise >= ?', toPaise(query.minAmount));
   if (query.maxAmount !== undefined) add('t.amount_paise <= ?', toPaise(query.maxAmount));
 
+  if (query.hasNotes) add("ifnull(trim(t.notes), '') <> ''");
+
   if (query.search) {
-    // Case-insensitive substring match (ASCII), like the old regex search.
+    // Case-insensitive substring match (ASCII), like the old regex search. `searchIn` narrows
+    // which text is searched; the SQL for each scope is fixed, only the needle is a value.
     const needle = query.search.toLowerCase();
-    add(
-      "(instr(lower(t.description), ?) > 0 OR instr(lower(ifnull(t.notes, '')), ?) > 0 OR instr(lower(ifnull(t.ref_no, '')), ?) > 0)",
-      needle,
-      needle,
-      needle,
-    );
+    const columns = SEARCH_COLUMNS[query.searchIn] || SEARCH_COLUMNS.all;
+    add(`(${columns.map((c) => `instr(lower(${c}), ?) > 0`).join(' OR ')})`, ...columns.map(() => needle));
   }
 
   return { where: `WHERE ${clauses.join(' AND ')}`, params };
@@ -128,4 +135,4 @@ function toSummaryRow(row, groupBy) {
   };
 }
 
-module.exports = { buildFilter, buildSort, buildSummaryQuery, toSummaryRow, SUMMARY_GROUP_KEYS };
+module.exports = { buildFilter, buildSort, buildSummaryQuery, toSummaryRow, SUMMARY_GROUP_KEYS, SEARCH_SCOPES };

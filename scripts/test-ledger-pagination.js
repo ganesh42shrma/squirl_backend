@@ -11,8 +11,8 @@ const { insertUser } = require('../src/plugins/users/user.model');
 const { insertTransaction } = require('../src/plugins/transactions/transaction.model');
 const { seedDefaults } = require('../src/plugins/users/defaults');
 const { newId, nowIso, insertRow } = require('../src/core/sql');
-const { listTransactions } = require('../src/plugins/transactions/transaction.service');
-const { listTransactions: schema } = require('../src/plugins/transactions/transaction.validation');
+const { listTransactions, getSummary } = require('../src/plugins/transactions/transaction.service');
+const { listTransactions: schema, summary: summarySchema } = require('../src/plugins/transactions/transaction.validation');
 const user = insertUser(db, { name: 'Paged user', email: 'paging@example.invalid', passwordHash: 'unused' });
 const other = insertUser(db, { name: 'Other user', email: 'other-paging@example.invalid', passwordHash: 'unused' });
 seedDefaults(db, user);
@@ -53,6 +53,17 @@ async function main() {
     const result = await list({ ...filter, page: 2, limit: 30 });
     assert.equal(result.meta.total, 117); assert.equal(result.items.length, 30);
   }
+  // Search scope, "has notes" and amount range (descriptions are 'Synthetic payment N', amounts 10-13, odd rows have notes).
+  assert.equal((await list({ search: 'shared lunch', searchIn: 'notes' })).meta.total, 117);
+  assert.equal((await list({ search: 'shared lunch', searchIn: 'description' })).meta.total, 0, 'description scope ignores notes');
+  assert.equal((await list({ search: 'synthetic payment', searchIn: 'notes' })).meta.total, 0, 'notes scope ignores the description');
+  assert.equal((await list({ search: 'synthetic payment', searchIn: 'description' })).meta.total, 235);
+  assert.equal((await list({ hasNotes: 'true' })).meta.total, 117);
+  assert.equal((await list({ hasNotes: 'false' })).meta.total, 235, 'hasNotes=false applies no filter');
+  assert.equal((await list({ minAmount: '12', maxAmount: '13' })).items.every((r) => r.amount >= 12 && r.amount <= 13), true);
+  assert.equal(schema.safeParse({ query: { searchIn: 'everything' } }).success, false);
+  const summary = await getSummary(user, summarySchema.parse({ query: { from: '2026-11-01', to: '2026-11-30', hasNotes: 'true', search: 'shared', searchIn: 'notes', importId: batch, groupBy: 'month' } }).query);
+  assert.equal(summary.totals.count, 117, 'summary honours the same filters as the list');
   assert.equal((await list({ category: 'none' })).meta.total, 118);
   assert.equal((await list({ auto: 'true' })).meta.total, 118);
   assert.equal((await list({ importId: batch })).meta.total, 235);

@@ -12,7 +12,9 @@ const familyContact = z.object({
   relationship: z.string().trim().max(80).default(''),
   aliases: z.array(z.string().trim().min(2).max(80)).max(20).default([]),
 });
-const dashboardConfig = z.object({
+// v1: the original finance-only list (fixed ids, enabled flags). Still accepted so an older
+// client or a saved layout keeps working; the frontend migrates it to v2 when it saves.
+const dashboardConfigV1 = z.object({
   version: z.literal(1),
   widgets: z.array(z.object({
     id: z.enum(['overview', 'attention', 'balance', 'monthStats', 'breakdown', 'cashflow', 'trend', 'accountSplit', 'whereItWent', 'comingUp', 'recent']),
@@ -24,6 +26,21 @@ const dashboardConfig = z.object({
   })).min(1).max(11).refine((w) => new Set(w.map((x) => x.id)).size === w.length, 'Widgets must be unique')
     .refine((w) => w.some((x) => x.enabled), 'Choose at least one widget'),
 });
+
+// v2: an ordered list of widget instances. Widget ids are "<module>.<name>" and are NOT listed
+// here: the frontend registry owns them and ignores ids it doesn't know, so adding a widget never
+// needs a backend change. Hidden widgets are simply absent. An empty board is allowed.
+const widgetSetting = z.union([z.string().max(100), z.number().finite(), z.boolean(), z.null()]);
+const dashboardConfigV2 = z.object({
+  version: z.literal(2),
+  items: z.array(z.object({
+    key: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/),
+    widget: z.string().regex(/^[a-z][a-z0-9]{0,29}\.[A-Za-z][A-Za-z0-9]{0,39}$/),
+    size: z.enum(['s', 'm', 'l', 'full']),
+    settings: z.record(z.string().max(40), widgetSetting).refine((r) => Object.keys(r).length <= 12, 'Too many settings'),
+  })).max(40).refine((items) => new Set(items.map((x) => x.key)).size === items.length, 'Widget keys must be unique'),
+});
+const dashboardConfig = z.union([dashboardConfigV1, dashboardConfigV2]);
 
 const updateProfile = z.object({
   body: z.object({

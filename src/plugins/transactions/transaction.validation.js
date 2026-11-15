@@ -1,7 +1,7 @@
 const { z } = require('zod');
 const { entityId, idParams, pagination } = require('../../core/schemas');
 const { TRANSACTION_TYPES, SOURCES } = require('./transaction.model');
-const { SUMMARY_GROUP_KEYS } = require('./transaction.helper');
+const { SUMMARY_GROUP_KEYS, SEARCH_SCOPES } = require('./transaction.helper');
 const { normalizeTag, normalizeTags } = require('../tags/tag.helper');
 
 const tags = z.array(z.string().max(40)).max(20).transform(normalizeTags);
@@ -67,6 +67,9 @@ const listTransactions = z.object({
     // Only rows sorted automatically by merchant memory and not yet confirmed.
     auto: z.stringbool().optional(),
     search: z.string().trim().max(100).optional(),
+    // Which text the search looks in: everything (default), the description, the notes or the reference number.
+    searchIn: z.enum(SEARCH_SCOPES).optional(),
+    hasNotes: z.stringbool().optional(),
     minAmount: z.coerce.number().min(0).optional(),
     maxAmount: z.coerce.number().min(0).optional(),
     sort: z.string().default('-date'),
@@ -83,6 +86,15 @@ const summary = z.object({
     account: z.string().trim().optional(),
     category: z.union([entityId, z.literal('none')]).optional(),
     tag: tag.optional(),
+    // The same filters as the list, so totals can describe exactly the rows being shown.
+    source: z.enum(SOURCES).optional(),
+    importId: entityId.optional(),
+    auto: z.stringbool().optional(),
+    search: z.string().trim().max(100).optional(),
+    searchIn: z.enum(SEARCH_SCOPES).optional(),
+    hasNotes: z.stringbool().optional(),
+    minAmount: z.coerce.number().min(0).optional(),
+    maxAmount: z.coerce.number().min(0).optional(),
     groupBy: z.enum(summaryGroups).default('category'),
   }),
 });

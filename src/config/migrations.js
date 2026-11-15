@@ -488,4 +488,184 @@ module.exports = [
     UNIQUE (user_id, media_type, tmdb_id)
   );
   `,
+  // v18: the Tasks module: lists, tasks (+ subtasks), checklists, habits and their streaks, the Daily
+  // Quest, an append-only XP ledger, the hunter profile and achievement unlocks. This is not financial
+  // data, so a financial reset leaves it alone; deleting the account removes it through the cascades.
+  // users.tasks_settings is JSON (timezone, day start hour, daily XP cap, Daily Quest template, ...).
+  `
+  ALTER TABLE users ADD COLUMN tasks_settings TEXT;
+
+  CREATE TABLE task_lists (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    color       TEXT,
+    position    INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    deleted_at  TEXT
+  );
+  CREATE INDEX task_lists_user ON task_lists (user_id, position);
+  CREATE VIEW active_task_lists AS SELECT rowid AS rowid, * FROM task_lists WHERE deleted_at IS NULL;
+
+  CREATE TABLE tasks (
+    id            TEXT PRIMARY KEY,
+    user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    list_id       TEXT REFERENCES task_lists(id) ON DELETE SET NULL,
+    parent_id     TEXT REFERENCES tasks(id) ON DELETE CASCADE,   -- a subtask; one level deep (enforced in the service)
+    title         TEXT NOT NULL,
+    notes         TEXT,
+    difficulty    TEXT NOT NULL DEFAULT 'normal' CHECK (difficulty IN ('trivial', 'easy', 'normal', 'hard', 'epic', 'boss')),
+    stat          TEXT CHECK (stat IS NULL OR stat IN ('str', 'vit', 'agi', 'int', 'per', 'cha')),
+    priority      INTEGER NOT NULL DEFAULT 0 CHECK (priority BETWEEN 0 AND 3),
+    status        TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'done')),
+    due_date      TEXT,                                          -- the person's own day, YYYY-MM-DD
+    due_time      TEXT,
+    repeat_rule   TEXT,                                          -- JSON { freq, interval, days, monthDay }; the next one is spawned on completion
+    series_id     TEXT,
+    position      INTEGER NOT NULL DEFAULT 0,
+    completed_at  TEXT,
+    completed_on  TEXT,                                          -- the person's day it was completed
+    completed_hour INTEGER,                                      -- local hour, for the early/late achievements
+    xp_awarded    INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    deleted_at    TEXT
+  );
+  CREATE INDEX tasks_user_status_due ON tasks (user_id, status, due_date);
+  CREATE INDEX tasks_parent ON tasks (parent_id);
+  CREATE INDEX tasks_list ON tasks (list_id, position);
+  CREATE VIEW active_tasks AS SELECT rowid AS rowid, * FROM tasks WHERE deleted_at IS NULL;
+
+  CREATE TABLE task_checklist_items (
+    id          TEXT PRIMARY KEY,
+    task_id     TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    text        TEXT NOT NULL,
+    done        INTEGER NOT NULL DEFAULT 0,
+    position    INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+  );
+  CREATE INDEX task_checklist_task ON task_checklist_items (task_id, position);
+
+  CREATE TABLE habits (
+    id                 TEXT PRIMARY KEY,
+    user_id            TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name               TEXT NOT NULL,
+    icon               TEXT,
+    color              TEXT,
+    difficulty         TEXT NOT NULL DEFAULT 'easy' CHECK (difficulty IN ('trivial', 'easy', 'normal', 'hard', 'epic')),
+    stat               TEXT CHECK (stat IS NULL OR stat IN ('str', 'vit', 'agi', 'int', 'per', 'cha')),
+    cadence            TEXT NOT NULL DEFAULT 'daily' CHECK (cadence IN ('daily', 'weekdays', 'times_per_week', 'every_n_days', 'times_per_month')),
+    days_mask          INTEGER NOT NULL DEFAULT 127,             -- bit0 = Monday ... bit6 = Sunday (weekdays cadence)
+    target_per_period  INTEGER NOT NULL DEFAULT 1 CHECK (target_per_period BETWEEN 1 AND 31),
+    every_n            INTEGER CHECK (every_n IS NULL OR every_n BETWEEN 2 AND 60),
+    target_quantity    REAL,                                     -- e.g. 8 'glasses'; NULL = simply done / not done
+    unit               TEXT,
+    start_date         TEXT NOT NULL,
+    freeze_max         INTEGER NOT NULL DEFAULT 2 CHECK (freeze_max BETWEEN 0 AND 5),
+    freezes_held       INTEGER NOT NULL DEFAULT 0,
+    freezes_used_total INTEGER NOT NULL DEFAULT 0,
+    skips_per_week     INTEGER NOT NULL DEFAULT 1 CHECK (skips_per_week BETWEEN 0 AND 7),
+    in_daily_quest     INTEGER NOT NULL DEFAULT 0,
+    current_streak     INTEGER NOT NULL DEFAULT 0,
+    longest_streak     INTEGER NOT NULL DEFAULT 0,
+    echo_bound_at      TEXT,
+    position           INTEGER NOT NULL DEFAULT 0,
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL,
+    archived_at        TEXT,
+    deleted_at         TEXT
+  );
+  CREATE INDEX habits_user ON habits (user_id, archived_at);
+  CREATE VIEW active_habits AS SELECT rowid AS rowid, * FROM habits WHERE deleted_at IS NULL;
+
+  CREATE TABLE habit_checkins (
+    id          TEXT PRIMARY KEY,
+    habit_id    TEXT NOT NULL REFERENCES habits(id) ON DELETE CASCADE,
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    date        TEXT NOT NULL,
+    kind        TEXT NOT NULL DEFAULT 'done' CHECK (kind IN ('done', 'skip')),
+    quantity    REAL,
+    created_at  TEXT NOT NULL
+  );
+  CREATE UNIQUE INDEX habit_checkins_day ON habit_checkins (habit_id, date, kind);
+  CREATE INDEX habit_checkins_user_date ON habit_checkins (user_id, date);
+
+  CREATE TABLE daily_quests (
+    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    date         TEXT NOT NULL,
+    items        TEXT NOT NULL,                                  -- JSON snapshot [{ key, type: 'habit' | 'custom', refId, title, done }]
+    status       TEXT NOT NULL DEFAULT 'open'
+      CHECK (status IN ('open', 'cleared', 'penalty_open', 'penalty_cleared', 'penalty_failed', 'paused')),
+    penalty_task TEXT,
+    penalty_due  TEXT,
+    cleared_at   TEXT,
+    created_at   TEXT NOT NULL,
+    PRIMARY KEY (user_id, date)
+  );
+
+  CREATE TABLE xp_events (                                       -- append-only: the only source of truth for XP
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    amount      INTEGER NOT NULL,                                -- negative for reversals
+    reason      TEXT NOT NULL CHECK (reason IN ('task', 'subtask', 'checklist', 'habit', 'daily_quest', 'penalty_quest',
+                                                'streak_milestone', 'achievement', 'rank_trial', 'reversal')),
+    source_id   TEXT,
+    dedupe_key  TEXT,                                            -- one award per key, so repeating a request can't double-pay
+    stat        TEXT,
+    tier        TEXT,
+    occurred_on TEXT NOT NULL,
+    meta        TEXT,
+    created_at  TEXT NOT NULL
+  );
+  CREATE UNIQUE INDEX xp_events_once ON xp_events (user_id, dedupe_key) WHERE dedupe_key IS NOT NULL;
+  CREATE INDEX xp_events_user_day ON xp_events (user_id, occurred_on);
+
+  CREATE TABLE hunter_profiles (                                 -- cached aggregates, rebuildable from xp_events
+    user_id             TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    total_xp            INTEGER NOT NULL DEFAULT 0,
+    level               INTEGER NOT NULL DEFAULT 1,
+    peak_level          INTEGER NOT NULL DEFAULT 1,
+    rank                TEXT NOT NULL DEFAULT 'E' CHECK (rank IN ('E', 'D', 'C', 'B', 'A', 'S', 'N', 'X')),
+    trial               TEXT,                                    -- JSON { rank, openedAt } while a Reassessment is open
+    title               TEXT,                                    -- equipped achievement id
+    daily_chain         INTEGER NOT NULL DEFAULT 0,
+    longest_daily_chain INTEGER NOT NULL DEFAULT 0,
+    updated_at          TEXT NOT NULL
+  );
+
+  CREATE TABLE user_achievements (
+    user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    achievement_id  TEXT NOT NULL,                               -- defined in code (achievements.js)
+    progress        TEXT,                                        -- JSON { count, target }
+    unlocked_at     TEXT,
+    PRIMARY KEY (user_id, achievement_id)
+  );
+  `,
+  // v19: opt-in push devices and durable delivery receipts. All remain inside the encrypted DB.
+  `
+  CREATE TABLE push_subscriptions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    password_changed_at TEXT NOT NULL,
+    endpoint TEXT NOT NULL UNIQUE,
+    subscription TEXT NOT NULL,
+    preferences TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX push_user ON push_subscriptions (user_id);
+  CREATE TABLE push_deliveries (
+    subscription_id TEXT NOT NULL REFERENCES push_subscriptions(id) ON DELETE CASCADE,
+    reminder_key TEXT NOT NULL,
+    sent_at TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    retry_at INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (subscription_id, reminder_key)
+  );
+  `,
 ];

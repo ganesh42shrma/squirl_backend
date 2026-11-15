@@ -41,6 +41,9 @@ function migrate(conn) {
 async function connectDB() {
   if (db) return;
   const file = config.db.path;
+  if (config.db.mustExist && !fs.existsSync(file)) {
+    throw new Error('The configured Squirl database is missing. Mount the database drive before starting the server.');
+  }
   ensureFolder(file);
   const isNew = !fs.existsSync(file);
 

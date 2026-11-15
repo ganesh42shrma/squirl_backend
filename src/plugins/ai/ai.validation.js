@@ -24,5 +24,6 @@ const update = z.object({
 
 const models = z.object({ query: z.object({ provider }) });
 const test = z.object({ body: z.object({ provider: provider.optional() }).default({}) });
+const quote = z.object({ body: z.object({ previous: z.string().trim().max(240).optional() }).strict().default({}) });
 
-module.exports = { update, models, test };
+module.exports = { update, models, test, quote };

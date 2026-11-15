@@ -5,6 +5,7 @@ const { connectRedis, disconnectRedis } = require('./config/redis');
 const app = require('./app');
 const { startSuggestionWorker, stopSuggestionWorker } = require('./plugins/insights/suggestions.worker');
 const { startFamilyWorker, stopFamilyWorker } = require('./plugins/users/family.worker');
+const { startNotificationWorker, stopNotificationWorker } = require('./plugins/notifications/notification.worker');
 
 let server;
 
@@ -13,7 +14,8 @@ async function start() {
   await connectRedis();
   startSuggestionWorker();
   startFamilyWorker();
-  server = app.listen(config.port, () => {
+  startNotificationWorker();
+  server = app.listen(config.port, config.host, () => {
     logger.info(`Server running on http://localhost:${config.port} (${config.env})`);
   });
 }
@@ -24,6 +26,7 @@ async function shutdown(signal, exitCode = 0) {
 
   stopSuggestionWorker();
   stopFamilyWorker();
+  await stopNotificationWorker();
   if (server) await new Promise((resolve) => server.close(resolve));
   await disconnectRedis().catch(() => {});
   await disconnectDB().catch(() => {});

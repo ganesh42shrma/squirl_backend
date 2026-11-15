@@ -27,19 +27,14 @@ function findRow(userId, id) {
   return row;
 }
 
-/** Debits from statements, grouped by counterparty key, for matching payments to due dates. */
-function paymentsByKey(userId, keys) {
-  if (!keys.size) return new Map();
-  const since = addDays(todayKey(), -460);
+/** Read current ledger rows on every request, including any bank narration changes. */
+function statementPayments(userId, today) {
+  const since = addDays(today, -460);
   const rows = getDb()
-    .prepare("SELECT id, date, description, amount_paise FROM active_transactions WHERE user_id = ? AND type = 'debit' AND date >= ? ORDER BY date")
+    .prepare("SELECT id, date, description, amount_paise, account, category_id, source FROM active_transactions WHERE user_id = ? AND type = 'debit' AND date >= ? ORDER BY date")
     .all(userId, since);
-  const out = new Map([...keys].map((k) => [k, []]));
-  for (const row of rows) {
-    const key = counterparty(row.description).key;
-    if (out.has(key)) out.get(key).push({ id: row.id, date: row.date, amount: row.amount_paise });
-  }
-  return out;
+  return rows.map((row) => ({ id: row.id, date: row.date, amount: row.amount_paise, key: counterparty(row.description).key,
+    account: row.account, category: row.category_id, source: row.source }));
 }
 
 // Latest statement date per account (and overall): before it, a missing payment is a real miss;
@@ -61,8 +56,32 @@ const paymentFor = (due, payments, amount) =>
       (!amount || Math.abs(p.amount - amount) <= amount * 0.2),
   ) || null;
 
+// Bank labels can change (e.g. CARS FINANCI -> CARS LOANEMID). Keep the lender's words,
+// without changing merchant-memory keys or treating a similar amount alone as proof of payment.
+const loanParty = (key) => String(key || '').replace(/\b(DEBIT|CREDIT|ACHDR|ACH|NACH|EMI|LOAN|LOANEMID|FINANCI|FINANCE)\b/g, ' ').replace(/\s+/g, ' ').trim();
+const expectedAmount = (row) => row.amount_paise || emiFor(row.principal_paise, row.interest_rate || 0, row.tenure_months);
+const accountMatches = (row, payment) => !row.account || row.account === payment.account;
+const sameLoanDetails = (row, payment, amount) => row.kind === 'loan' && row.match_key && row.account && row.category_id
+  && payment.source === 'import' && row.account === payment.account && row.category_id === payment.category
+  && amount === payment.amount && loanParty(row.match_key).length >= 3 && loanParty(row.match_key) === loanParty(payment.key);
+
+function matchingPayment(row, due, amount, ctx) {
+  const exact = paymentFor(due, (ctx.payments.get(row.match_key) || []).filter((p) => accountMatches(row, p)), amount);
+  if (exact) return exact;
+  const candidates = ctx.transactions.filter((p) => sameLoanDetails(row, p, amount) && paymentFor(due, [p], amount));
+  if (candidates.length !== 1) return null;
+  const candidate = candidates[0];
+  // A changed label is safe to accept only if no other active commitment can claim that row.
+  const ambiguous = ctx.commitments.some((other) => other.id !== row.id && other.active && other.start_date <= candidate.date
+    && (!other.end_date || other.end_date >= candidate.date) && accountMatches(other, candidate)
+    && ((other.match_key === candidate.key && paymentFor(due, [candidate], expectedAmount(other)))
+      || sameLoanDetails(other, candidate, expectedAmount(other))));
+  return ambiguous ? null : candidate;
+}
+
 /** Everything the UI shows for one commitment, computed from its fields, today and the statements. */
-function toView(row, { today, payments, coverage }) {
+function toView(row, ctx) {
+  const { today, payments, coverage } = ctx;
   const base = toCommitment(row);
   const c = {
     amountPaise: row.amount_paise,
@@ -91,13 +110,15 @@ function toView(row, { today, payments, coverage }) {
   if (ended || (endDate && nextDue > endDate)) nextDue = null;
 
   const linked = Boolean(row.match_key);
-  const list = linked ? payments.get(row.match_key) || [] : [];
-  const covered = (row.account && coverage.byAccount.get(row.account)) || coverage.overall;
+  const list = linked ? (payments.get(row.match_key) || []).filter((p) => accountMatches(row, p)) : [];
+  const matched = new Map(list.map((p) => [p.id, p]));
+  const covered = row.account ? coverage.byAccount.get(row.account) : coverage.overall;
 
   // The most recent due date: paid, missed, or not yet visible in an imported statement.
   let last = null;
   if (lastDue && daysBetween(lastDue, today) <= MISSED_LOOKBACK && (!endDate || lastDue <= endDate)) {
-    const payment = linked ? paymentFor(lastDue, list, amount) : null;
+    const payment = linked ? matchingPayment(row, lastDue, amount, ctx) : null;
+    if (payment) matched.set(payment.id, payment);
     last = {
       date: lastDue,
       state: !linked ? 'unknown' : payment ? 'paid' : covered && covered >= addDays(lastDue, PAY_WINDOW_AFTER) ? 'missed' : 'awaiting',
@@ -107,7 +128,8 @@ function toView(row, { today, payments, coverage }) {
 
   let next = null;
   if (nextDue && row.active) {
-    const early = linked ? paymentFor(nextDue, list, amount) : null; // already paid ahead of the due date?
+    const early = linked ? matchingPayment(row, nextDue, amount, ctx) : null; // already paid ahead of the due date?
+    if (early) matched.set(early.id, early);
     next = { date: nextDue, daysUntil: daysBetween(today, nextDue), paid: Boolean(early) };
   }
 
@@ -129,7 +151,7 @@ function toView(row, { today, payments, coverage }) {
     next,
     last,
     linked,
-    recentPayments: list.slice(-3).reverse().map((p) => ({ _id: p.id, date: p.date, amount: rupees(p.amount) })),
+    recentPayments: [...matched.values()].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 3).map((p) => ({ _id: p.id, date: p.date, amount: rupees(p.amount) })),
     ...(loan && {
       loan: {
         source: loan.source, // 'yours' (from the lender's figures you entered) or 'estimated' (from the start date)
@@ -147,17 +169,20 @@ function toView(row, { today, payments, coverage }) {
   };
 }
 
-function context(userId, rows) {
+function context(userId, rows, today = todayKey()) {
   const keys = new Set(rows.map((r) => r.match_key).filter(Boolean));
-  return { today: todayKey(), payments: paymentsByKey(userId, keys), coverage: statementCoverage(userId) };
+  const transactions = keys.size ? statementPayments(userId, today) : [];
+  const payments = new Map([...keys].map((key) => [key, []]));
+  for (const payment of transactions) if (payments.has(payment.key)) payments.get(payment.key).push(payment);
+  return { today, payments, transactions, commitments: rows, coverage: statementCoverage(userId) };
 }
 
 // A commitment's monthly share, so quarterly and yearly charges add up sensibly.
 const monthlyShare = (view) => (view.amount ? view.amount / PERIOD_MONTHS[view.frequency] : 0);
 
-async function listCommitments(userId) {
+async function listCommitments(userId, today) {
   const rows = rowsFor(userId);
-  const ctx = context(userId, rows);
+  const ctx = context(userId, rows, today);
   const items = rows.map((r) => toView(r, ctx));
   const active = items.filter((i) => i.active && i.status !== 'ended');
   return {
@@ -172,14 +197,14 @@ async function listCommitments(userId) {
   };
 }
 
-async function getCommitment(userId, id) {
+async function getCommitment(userId, id, today) {
   const row = findRow(userId, id);
-  return toView(row, context(userId, [row]));
+  return toView(row, context(userId, rowsFor(userId), today));
 }
 
 /** Due soon (within each one's reminder window, not yet paid) and recently missed. */
-async function listAlerts(userId) {
-  const { items } = await listCommitments(userId);
+async function listAlerts(userId, today) {
+  const { items } = await listCommitments(userId, today);
   const alerts = [];
   for (const i of items) {
     if (!i.active) continue;
@@ -234,7 +259,7 @@ async function getSchedule(userId, id) {
   const row = findRow(userId, id);
   if (row.kind !== 'loan') throw AppError.badRequest('Only loans have a repayment schedule', 'NOT_A_LOAN');
   const today = todayKey();
-  const view = toView(row, context(userId, [row]));
+  const view = toView(row, context(userId, rowsFor(userId)));
   if (!view.loan || view.loan.outstanding == null) return { rows: [], loan: view.loan };
   const emi = row.amount_paise || emiFor(row.principal_paise, row.interest_rate || 0, row.tenure_months);
   const done = duesThrough(row.start_date, row.due_day, 'monthly', today);
@@ -257,14 +282,17 @@ async function getSchedule(userId, id) {
 async function detectRecurring(userId) {
   const db = getDb();
   const since = addDays(todayKey(), -460);
-  const linked = new Set(db.prepare('SELECT match_key FROM active_commitments WHERE user_id = ? AND match_key IS NOT NULL').pluck().all(userId));
+  const commitments = rowsFor(userId);
+  const linked = new Set(commitments.map((row) => row.match_key).filter(Boolean));
   const groups = new Map();
   for (const row of db
-    .prepare("SELECT date, description, amount_paise, account FROM active_transactions WHERE user_id = ? AND type = 'debit' AND source = 'import' AND date >= ? ORDER BY date")
+    .prepare("SELECT date, description, amount_paise, account, category_id, source FROM active_transactions WHERE user_id = ? AND type = 'debit' AND source = 'import' AND date >= ? ORDER BY date")
     .all(userId, since)) {
     const party = counterparty(row.description);
+    const payment = { key: party.key, amount: row.amount_paise, account: row.account, category: row.category_id, source: row.source };
     // Moving money to your own account isn't a bill.
-    if (!isUsableKey(party.key) || linked.has(party.key) || /\bSELF\b/.test(party.key)) continue;
+    if (!isUsableKey(party.key) || linked.has(party.key) || /\bSELF\b/.test(party.key)
+      || commitments.some((loan) => sameLoanDetails(loan, payment, expectedAmount(loan)))) continue;
     if (!groups.has(party.key)) groups.set(party.key, { key: party.key, name: party.name, example: row.description, rows: [] });
     groups.get(party.key).rows.push(row);
   }

@@ -6,9 +6,18 @@ const config = Object.freeze({
   env,
   isDev: env === 'development',
   port: Number(process.env.PORT) || 4000,
+  host: process.env.HOST || '127.0.0.1',
+  serveFrontend: process.env.SERVE_FRONTEND === 'true',
+  trustProxyLoopback: process.env.TRUST_PROXY_LOOPBACK === 'true',
+  push: Object.freeze({
+    publicKey: process.env.PUSH_PUBLIC_KEY || '',
+    privateKey: process.env.PUSH_PRIVATE_KEY || '',
+    subject: process.env.PUSH_SUBJECT || '',
+  }),
   db: Object.freeze({
     // SQLCipher-encrypted SQLite file. Default: the "mushroom" pendrive.
     path: process.env.DB_PATH || '/Volumes/mushroom/squirl/squirl.db',
+    mustExist: process.env.DB_MUST_EXIST === 'true',
     // Optional. When unset the key is read from the macOS Keychain (see `npm run db:key`).
     key: process.env.DB_KEY || null,
   }),

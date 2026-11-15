@@ -1,0 +1,16 @@
+[Unit]
+Description=Squirl local bank statement parser
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# Run `uv sync --no-dev` in squirl_parser before enabling this unit.
+WorkingDirectory=/ABSOLUTE/PATH/TO/squirl/squirl_parser
+ExecStart=/ABSOLUTE/PATH/TO/squirl/squirl_parser/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+UMask=0077
+Restart=on-failure
+RestartSec=15
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
