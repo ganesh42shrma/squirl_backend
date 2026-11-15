@@ -8,6 +8,7 @@ const { parseStatement } = require('./import.client');
 const { categoryFor } = require('../rules/rules.service');
 const suggestionWorker = require('../insights/suggestions.worker');
 const { toDate, toTransaction, getPeriod } = require('./import.helper');
+const { reconcileStatement, restoreSmsForImport, linkTransfer, identity, upiRef } = require('../sms/sms.reconcile');
 
 const findById = (userId, id) => toImport(getDb().prepare('SELECT * FROM active_imports WHERE id = ? AND user_id = ?').get(id, userId));
 
@@ -24,16 +25,23 @@ function insertNewRows(db, userId, docs) {
     const exists = db.prepare('SELECT 1 FROM active_transactions WHERE user_id = ? AND hash = ?');
     const seen = new Set();
     const added = [];
+    let reconciled = 0;
+    const counts = new Map();
+    for (const doc of new Map(docs.map((d) => [d.hash, d])).values()) {
+      if (upiRef(doc)) counts.set(identity(doc), (counts.get(identity(doc)) || 0) + 1);
+    }
     for (const doc of docs) {
       if (seen.has(doc.hash) || exists.get(userId, doc.hash)) continue;
       seen.add(doc.hash);
+      if (reconcileStatement(db, userId, doc, counts.get(identity(doc)) > 1)) { reconciled++; continue; }
       // Merchant memory: a merchant categorised before arrives sorted, flagged as automatic.
       const category = categoryFor(db, userId, doc);
       const row = category ? { ...doc, category, autoCategorized: true } : doc;
-      insertTransaction(db, userId, row);
+      const transactionId = insertTransaction(db, userId, row);
+      linkTransfer(db, userId, transactionId);
       added.push(row);
     }
-    return added;
+    return { added, reconciled };
   })();
 }
 
@@ -53,7 +61,7 @@ async function createImport(userId, { file, bank, password }) {
     // The parser reports the bank it read the statement as (the detected one for bank=auto).
     const statementBank = parsed.bank;
     const docs = parsed.transactions.map((row) => toTransaction(row, { bank: statementBank, importId: id })).filter(Boolean);
-    const added = insertNewRows(db, userId, docs);
+    const { added, reconciled } = insertNewRows(db, userId, docs);
 
     const period = getPeriod(docs);
     const fresh = getPeriod(added);
@@ -61,7 +69,8 @@ async function createImport(userId, { file, bank, password }) {
       parsed: parsed.transactions.length,
       inserted: added.length,
       auto_categorized: added.filter((d) => d.autoCategorized).length,
-      duplicates: docs.length - added.length,
+      duplicates: docs.length - added.length - reconciled,
+      reconciled,
       skipped: parsed.transactions.length - docs.length,
     };
     updateRow(db, 'imports', id, {
@@ -77,9 +86,9 @@ async function createImport(userId, { file, bank, password }) {
 
     logger.info('Statement import completed', { importId: id, bank: statementBank, ...stats });
     // New unsorted rows: let the background job suggest categories for them now.
-    if (stats.inserted > stats.auto_categorized) suggestionWorker.nudge();
+    if (stats.inserted > stats.auto_categorized || reconciled) suggestionWorker.nudge();
     // New rows can move goals funded by an auto-debit or a watched account: refresh their plan check.
-    if (stats.inserted) require('../goals/goal.worker').nudge(userId);
+    if (stats.inserted || reconciled) require('../goals/goal.worker').nudge(userId);
     return findById(userId, id);
   } catch (err) {
     try {
@@ -115,6 +124,7 @@ async function deleteImport(userId, id) {
 
   const transactionsDeleted = db.transaction(() => {
     const now = nowIso();
+    restoreSmsForImport(db, userId, id);
     const { changes } = db.prepare('UPDATE transactions SET deleted_at = ?, updated_at = ? WHERE import_id = ? AND user_id = ? AND deleted_at IS NULL').run(now, now, id, userId);
     db.prepare('UPDATE imports SET deleted_at = ?, updated_at = ? WHERE id = ? AND user_id = ?').run(now, now, id, userId);
     return changes;

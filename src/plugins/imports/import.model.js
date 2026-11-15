@@ -18,6 +18,7 @@ function toImport(row) {
       duplicates: row.duplicates,
       skipped: row.skipped,
       autoCategorized: row.auto_categorized, // of the inserted rows, sorted by merchant memory
+      reconciled: row.reconciled || 0,
     },
     periodFrom: toApiDate(row.period_from),
     periodTo: toApiDate(row.period_to),

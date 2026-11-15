@@ -145,8 +145,9 @@ async function resetFinancialData(userId) {
   const result = db.transaction(() => {
     const now = nowIso();
     updateRow(db, 'users', userId, { transactions_reset_at: now, financial_generation: findRow(userId).financial_generation + 1, updated_at: now });
+    db.prepare('UPDATE sms_devices SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL').run(now, userId);
     const archived = {};
-    for (const table of ['goals', 'transactions', 'imports', 'commitments', 'merchant_rules', 'merchant_suggestions', 'categories', 'tags']) {
+    for (const table of ['sms_events', 'sms_accounts', 'goals', 'transactions', 'imports', 'commitments', 'merchant_rules', 'merchant_suggestions', 'categories', 'tags']) {
       archived[table] = db.prepare(`UPDATE ${table} SET deleted_at = ?, updated_at = ? WHERE user_id = ? AND deleted_at IS NULL`).run(now, now, userId).changes;
     }
     seedDefaults(db, userId);

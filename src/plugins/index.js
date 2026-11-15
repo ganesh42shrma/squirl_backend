@@ -6,6 +6,7 @@ const router = Router();
 // Public
 router.use('/health', require('./health/health.routes'));
 router.use('/auth', require('./auth/auth.routes'));
+router.use('/sms', require('./sms/sms.routes').ingestRouter);
 
 // Everything below needs a signed-in user; services scope every query to req.user.id.
 router.use(requireAuth);
@@ -22,5 +23,6 @@ router.use('/ai', require('./ai/ai.routes'));
 router.use('/feeds', require('./feeds/feeds.routes'));
 router.use('/tasks', require('./tasks/task.routes'));
 router.use('/notifications', require('./notifications/notification.routes'));
+router.use('/sms', require('./sms/sms.routes').router);
 
 module.exports = router;

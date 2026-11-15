@@ -55,7 +55,7 @@ async function main() {
   const one = row('2026-10-31', 2000);
   const distinct = { ...one, refNo: 'TEST2001', balance: one.balance - 10 };
   const mixed = await upload([one, one, distinct, { ...one, date: 'invalid' }, { ...one, debit: 0 }]);
-  assert.deepEqual(mixed.stats, { parsed: 5, inserted: 2, duplicates: 1, skipped: 2, autoCategorized: 0 });
+  assert.deepEqual(mixed.stats, { parsed: 5, inserted: 2, duplicates: 1, skipped: 2, autoCategorized: 0, reconciled: 0 });
   const isolated = await service.createImport(other, { bank: 'auto', file });
   assert.equal(isolated.stats.inserted, 2);
   assert.equal(count(), 234);

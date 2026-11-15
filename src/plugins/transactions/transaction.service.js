@@ -86,9 +86,9 @@ async function updateTransaction(userId, id, data) {
   const current = db.prepare('SELECT source FROM active_transactions WHERE id = ? AND user_id = ?').get(id, userId);
   if (!current) throw AppError.notFound('Transaction not found');
   // Statement facts must stay intact for reconciliation and duplicate detection.
-  if (current.source === 'import') {
+  if (current.source === 'import' || current.source === 'sms') {
     const locked = Object.keys(data).filter((key) => !['notes', 'category', 'tags'].includes(key));
-    if (locked.length) throw AppError.badRequest('Statement details are read-only. You can change notes, categories and tags.', 'STATEMENT_READ_ONLY', { fields: locked });
+    if (locked.length) throw AppError.badRequest('Captured payment details are read-only. You can change notes, categories and tags.', 'STATEMENT_READ_ONLY', { fields: locked });
   }
 
   db.transaction(() => {

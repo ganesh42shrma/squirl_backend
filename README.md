@@ -6,6 +6,14 @@ A lightweight personal finance tracker API. You log expenses and income like row
 
 ## Getting started
 
+The example below uses macOS. On **Linux**, skip both `db:key` commands: an existing USB database
+needs its **original key**, not a new one. On the Mac, run `npm run db:key -- --show` from
+`squirl_backend` and transfer that key privately through your password manager. On Linux, add it as
+`DB_KEY` in the backend's ignored `.env` on the internal disk, set `DB_PATH` to the actual Linux
+mount path and `DB_MUST_EXIST=true`, then run `chmod 600 .env`. Do not paste the key into chat.
+The `npm run llm` launcher is also Mac-specific; Linux local AI needs its own Ollama setup.
+See the [Linux desktop and Android setup](deployment/MOBILE.md) for the full deployment steps.
+
 ```bash
 cp .env.example .env        # adjust DB_PATH / PARSER_SERVICE_URL if needed
 npm install
@@ -19,7 +27,7 @@ npm run dev                 # node --watch, restarts on file changes
 |---|---|---|
 | `PORT` | `4000` | HTTP port |
 | `DB_PATH` | `/Volumes/mushroom/squirl/squirl.db` | Encrypted SQLite file (the "mushroom" pendrive) |
-| `DB_KEY` | — | Database key. Leave unset to read it from the macOS Keychain (service `squirl-db`) |
+| `DB_KEY` | — | Linux: set the original database key in `.env` or the environment. macOS: may be left unset to use Keychain (service `squirl-db`) |
 | `NODE_ENV` | `development` | `development` gives pretty logs and stacks for unexpected errors |
 | `LOG_LEVEL` | `debug` in dev, `info` otherwise | Winston level |
 | `CORS_ORIGIN` | `http://localhost:5173` | The frontend's exact origin (cookies are only sent to it) |
@@ -71,11 +79,15 @@ router.use('/<feature>', require('./<feature>/<feature>.routes'));
 
 ## Storage
 
+Bank SMS capture is available through an authenticated backend API. See
+[SMS setup and API contract](deployment/SMS.md) for device pairing, SBI/Kotak templates, review,
+statement reconciliation, and the Android-client work still required.
+
 All data lives in one SQLite file, encrypted with SQLCipher (v4 format), on the `mushroom` pendrive.
 
 - **Encryption.** The drive is plain exFAT, so the file itself is encrypted: without the key it is random bytes.
-  The key is a random 256-bit value in the macOS Keychain on this laptop, never on the drive.
-  **Back it up** (`npm run db:key -- --show` → password manager): losing it means losing the data.
+  The key is a random 256-bit value in the macOS Keychain, or supplied as `DB_KEY` on Linux, never on the database drive.
+  **Back it up** (on the Mac, `npm run db:key -- --show` → password manager): losing it means losing the data.
 - **Drive not plugged in.** The server refuses to start (`Database location /Volumes/mushroom not found`)
   instead of creating a database on the internal disk. If the drive disappears while running, requests fail
   with `503 DB_UNAVAILABLE`, and `GET /health` shows `db: "unavailable"`.

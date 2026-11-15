@@ -2,7 +2,7 @@ const { insertRow, newId, nowIso, toPaise, fromPaise, toDateKey, toApiDate, plac
 const { memberCandidate } = require('../users/contact.helper');
 
 const TRANSACTION_TYPES = ['debit', 'credit'];
-const SOURCES = ['manual', 'import'];
+const SOURCES = ['manual', 'import', 'sms'];
 
 // Table: transactions (+ transaction_tags). Every read joins the category and its parent,
 // so a row can show "Food & Drinks › Food Delivery". Filters use the alias `t` and must
@@ -10,6 +10,7 @@ const SOURCES = ['manual', 'import'];
 // Categories are joined on user too, so a row can never show another account's category.
 const SELECT_TRANSACTIONS = `
   SELECT t.*,
+         (SELECT count(*) FROM sms_events e WHERE e.transaction_id = t.id AND e.user_id = t.user_id AND e.deleted_at IS NULL) AS sms_evidence_count,
          c.name AS c_name, c.color AS c_color, c.icon AS c_icon, c.type AS c_type,
          p.id AS p_id, p.name AS p_name, p.color AS p_color, p.icon AS p_icon
   FROM active_transactions t
@@ -44,6 +45,8 @@ function toTransaction(row, tags = []) {
     account: row.account,
     paymentMode: row.payment_mode ?? undefined,
     source: row.source,
+    transferId: row.transfer_id || undefined,
+    smsEvidenceCount: row.sms_evidence_count || 0,
     importId: row.import_id ?? undefined,
     refNo: row.ref_no ?? undefined,
     balance: fromPaise(row.balance_paise),

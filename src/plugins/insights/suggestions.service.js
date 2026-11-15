@@ -17,7 +17,7 @@ const groupKey = (direction, key) => `${direction}|${key}`;
 /** This account's unsorted imported rows, grouped by counterparty and direction. */
 function unsortedGroups(db, userId) {
   const rows = db
-    .prepare("SELECT id, description, type FROM active_transactions WHERE user_id = ? AND category_id IS NULL ORDER BY date DESC, rowid DESC")
+    .prepare("SELECT id, description, type FROM active_transactions WHERE user_id = ? AND source != 'sms' AND category_id IS NULL ORDER BY date DESC, rowid DESC")
     .all(userId);
   const groups = new Map();
   for (const row of rows) {
@@ -278,7 +278,7 @@ async function dismissSuggestion(userId, id) {
 
 // Users with unsorted imported rows: the worker's to-do list.
 const usersWithUnsorted = (db) =>
-  db.prepare('SELECT DISTINCT user_id FROM active_transactions WHERE category_id IS NULL AND user_id IS NOT NULL').pluck().all();
+  db.prepare("SELECT DISTINCT user_id FROM active_transactions WHERE source != 'sms' AND category_id IS NULL AND user_id IS NOT NULL").pluck().all();
 
 // Apply trusted rules/cached answers without teaching model guesses back as user-confirmed rules.
 // A successful but inconclusive model answer (or an unidentifiable description) goes to Other.
@@ -293,7 +293,7 @@ function autoCategorize(db, userId) {
     const saved = new Map(db.prepare('SELECT * FROM active_merchant_suggestions WHERE user_id = ?').all(userId).map((r) => [groupKey(r.direction, r.merchant_key), r]));
     const valid = new Set(db.prepare('SELECT id FROM active_categories WHERE user_id = ?').pluck().all(userId));
     const update = db.prepare('UPDATE transactions SET category_id = ?, auto_categorized = 1, updated_at = ? WHERE user_id = ? AND id = ? AND category_id IS NULL AND deleted_at IS NULL');
-    const rows = db.prepare('SELECT id, description, type FROM active_transactions WHERE user_id = ? AND category_id IS NULL').all(userId);
+    const rows = db.prepare("SELECT id, description, type FROM active_transactions WHERE user_id = ? AND source != 'sms' AND category_id IS NULL").all(userId);
     let applied = 0;
     for (const row of rows) {
       const party = counterparty(row.description);

@@ -36,11 +36,12 @@ function runBatch(db, userId, limit = BATCH) {
     }
     const policy = familyPolicy(db, userId);
     if (!policy.familyId) throw new Error('Family category is missing');
-    const rows = db.prepare(`SELECT rowid, id, description, category_id, auto_categorized FROM active_transactions
+    const rows = db.prepare(`SELECT rowid, id, description, category_id, auto_categorized, transfer_id FROM active_transactions
       WHERE user_id = ? AND rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`).all(userId, job.cursor, job.through_rowid, limit);
     const update = db.prepare('UPDATE transactions SET category_id = ?, auto_categorized = 1, updated_at = ? WHERE user_id = ? AND id = ? AND deleted_at IS NULL');
     let changed = 0;
     for (const row of rows) {
+      if (row.transfer_id) continue; // A paired own-account transfer is stronger evidence than a contact name.
       const category = policy.matches(row.description) ? policy.familyId
         : row.auto_categorized && policy.familyIds.has(row.category_id) ? policy.otherId : null;
       if (category && category !== row.category_id) changed += update.run(category, nowIso(), userId, row.id).changes;

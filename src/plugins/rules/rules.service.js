@@ -6,7 +6,7 @@ const { familyPolicy } = require('../users/family');
 
 /**
  * Learns from rows the person just categorised (single edit, bulk edit, or applied suggestions).
- * Only imported rows teach: their descriptions come from the bank, so they repeat; hand-typed ones don't.
+ * Only bank-import/SMS rows teach: their descriptions repeat; hand-typed ones don't.
  * The person's latest choice wins, and those rows count as confirmed (no longer "automatic").
  * Runs inside the caller's transaction. Each account has its own memory.
  */
@@ -16,7 +16,7 @@ function learn(db, userId, ids, categoryId) {
   if (!categoryId) return; // clearing a category teaches nothing
 
   const rows = db
-    .prepare(`SELECT description, type FROM active_transactions WHERE user_id = ? AND source = 'import' AND id IN (${placeholders(ids)})`)
+    .prepare(`SELECT description, type FROM active_transactions WHERE user_id = ? AND source IN ('import', 'sms') AND id IN (${placeholders(ids)})`)
     .all(userId, ...ids);
   const now = nowIso();
   const upsert = db.prepare(`
@@ -60,7 +60,7 @@ function matchUnsorted(db, userId) {
       .map((r) => [`${r.direction}:${r.merchant_key}`, r.category_id]),
   );
   return db
-    .prepare("SELECT id, description, type FROM active_transactions WHERE user_id = ? AND category_id IS NULL AND source = 'import'")
+    .prepare("SELECT id, description, type FROM active_transactions WHERE user_id = ? AND category_id IS NULL AND source IN ('import', 'sms')")
     .all(userId)
     .map((row) => ({ id: row.id, categoryId: policy.categoryFor(row.description, rules.get(`${row.type}:${merchantKey(row.description)}`)) }))
     .filter((m) => m.categoryId);

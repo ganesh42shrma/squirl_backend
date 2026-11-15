@@ -25,7 +25,8 @@
     "test:notifications": "node scripts/test-notifications.js",
     "test:private-serving": "node scripts/test-private-serving.js",
     "test:commitments": "node scripts/test-commitments.js",
-    "test:quotes": "node scripts/test-quotes.js"
+    "test:quotes": "node scripts/test-quotes.js",
+    "test:sms": "node scripts/test-sms.js"
   },
   "engines": {
     "node": ">=22.12"

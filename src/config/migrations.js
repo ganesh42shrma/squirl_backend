@@ -668,4 +668,46 @@ module.exports = [
     PRIMARY KEY (subscription_id, reminder_key)
   );
   `,
+  // v20: SMS capture provenance, scoped devices, and statement reconciliation.
+  (conn) => {
+    const original = conn.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transactions'").pluck().get();
+    const indexes = conn.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'transactions' AND sql IS NOT NULL").pluck().all();
+    conn.exec('DROP VIEW active_transactions');
+    conn.exec(original.replace(/^CREATE TABLE ["`]?transactions["`]?/i, 'CREATE TABLE transactions_sms')
+      .replace("source IN ('manual', 'import')", "source IN ('manual', 'import', 'sms')"));
+    const columns = conn.pragma('table_info(transactions)').map((c) => c.name).join(', ');
+    conn.exec(`INSERT INTO transactions_sms (rowid, ${columns}) SELECT rowid, ${columns} FROM transactions ORDER BY rowid`);
+    conn.exec('DROP TABLE transactions; ALTER TABLE transactions_sms RENAME TO transactions;');
+    for (const sql of indexes) conn.exec(sql);
+    conn.exec(`
+      ALTER TABLE transactions ADD COLUMN transfer_id TEXT;
+      CREATE VIEW active_transactions AS SELECT rowid AS rowid, * FROM transactions WHERE deleted_at IS NULL;
+      ALTER TABLE imports ADD COLUMN reconciled INTEGER NOT NULL DEFAULT 0;
+      CREATE TABLE sms_accounts (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        bank TEXT NOT NULL CHECK (bank IN ('sbi', 'kotak')), last4 TEXT NOT NULL,
+        senders TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT
+      );
+      CREATE UNIQUE INDEX sms_account_bank ON sms_accounts(user_id, bank) WHERE deleted_at IS NULL;
+      CREATE TABLE sms_devices (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, password_changed_at TEXT NOT NULL,
+        generation INTEGER NOT NULL, created_at TEXT NOT NULL, last_seen_at TEXT, revoked_at TEXT
+      );
+      CREATE INDEX sms_devices_user ON sms_devices(user_id);
+      CREATE TABLE sms_events (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        device_id TEXT NOT NULL REFERENCES sms_devices(id) ON DELETE CASCADE,
+        event_key TEXT NOT NULL, message_hash TEXT NOT NULL, sender TEXT NOT NULL,
+        received_at TEXT NOT NULL, bank TEXT, body TEXT, parsed TEXT,
+        status TEXT NOT NULL CHECK(status IN ('captured', 'reconciled', 'duplicate', 'review', 'ignored', 'dismissed')),
+        reason TEXT, transaction_id TEXT REFERENCES transactions(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT,
+        UNIQUE(device_id, event_key)
+      );
+      CREATE INDEX sms_events_user_status ON sms_events(user_id, status) WHERE deleted_at IS NULL;
+      CREATE INDEX sms_events_transaction ON sms_events(transaction_id) WHERE deleted_at IS NULL;
+      CREATE INDEX sms_events_hash ON sms_events(user_id, message_hash) WHERE deleted_at IS NULL;
+    `);
+  },
 ];

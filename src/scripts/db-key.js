@@ -9,7 +9,7 @@ const { KEYCHAIN, readKeychainKey } = require('../config/dbKey');
 
 function main() {
   if (process.platform !== 'darwin') {
-    console.error('The Keychain is macOS only. Set DB_KEY in the environment instead.');
+    console.error('The Keychain is macOS only. Set DB_KEY in the backend .env or environment instead. For an existing database, use its original key from your Mac or backup; do not generate a replacement.');
     return 1;
   }
 
