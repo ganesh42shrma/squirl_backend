@@ -3,7 +3,9 @@
 The backend can capture new SBI UPI debit alerts and the supplied Kotak UPI debit/credit formats.
 It does not read a phone's inbox. An Android receiver/automation client must obtain Android's SMS
 permission, filter bank messages on the phone, queue events locally, and submit them over the existing
-private Tailscale HTTPS address. That client and a pairing/review UI are not implemented here.
+private Tailscale HTTPS address. The frontend provides Profile → Bank SMS pairing/review, and the
+[Android SMS companion](../android-sms-helper/README.md) provides the receiver and encrypted queue.
+The companion still needs its full SDK build and physical-phone checks on Linux.
 
 ## Install/update on the Linux desktop
 
@@ -104,7 +106,7 @@ Use a stable device event ID for delivery retries. Reusing an ID with a differen
 financial identity. A 200 response is an acknowledgement even for `review`/`ignored`: don't resend it
 endlessly. Retry network failures/5xx with backoff, honor 429, and require re-pairing on
 401 `SMS_AUTH_REQUIRED`. The server limits ingestion to 120 requests/device/minute and pairing to
-10 attempts/user/hour (at most five non-revoked devices). The Android offline queue is client work.
+10 attempts/user/hour (at most five non-revoked devices). The companion retains an encrypted offline queue.
 
 ## Ledger and statement behavior
 
@@ -156,8 +158,8 @@ endlessly. Retry network failures/5xx with backoff, honor 429, and require re-pa
 ```
 
 SBI credits/refunds and other unrecognized formats remain review-only until there are representative
-examples and tests. No real sender IDs have been configured, no Android APK is included, and there
-is no new frontend pairing/review screen in this backend change. An already-open frontend does not
+examples and tests. No sender/account is enabled automatically. Android source and build instructions
+are included, rather than a prebuilt APK. An already-open frontend does not
 poll SMS ingestion; reload/refetch the ledger to see a newly submitted event.
 
 ## Validation

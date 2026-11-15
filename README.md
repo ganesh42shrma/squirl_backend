@@ -81,7 +81,7 @@ router.use('/<feature>', require('./<feature>/<feature>.routes'));
 
 Bank SMS capture is available through an authenticated backend API. See
 [SMS setup and API contract](deployment/SMS.md) for device pairing, SBI/Kotak templates, review,
-statement reconciliation, and the Android-client work still required.
+statement reconciliation, and the [Android SMS companion](android-sms-helper/README.md) build/setup.
 
 All data lives in one SQLite file, encrypted with SQLCipher (v4 format), on the `mushroom` pendrive.
 
