@@ -186,6 +186,8 @@ function undoCheckIn(ctx, id, date) {
 function restoreQuantity(ctx, id, date, quantity) {
   const { db, userId, clock, events } = ctx;
   const row = findHabitRow(db, userId, id);
+  // Same window as any check-in change: a day that has slipped out of the grace period is history now.
+  assertCheckinDate(ctx, row, date);
   db.prepare("UPDATE habit_checkins SET quantity = ? WHERE habit_id = ? AND date = ? AND kind = 'done'").run(quantity ?? null, id, date);
   const checkin = db.prepare("SELECT kind, quantity FROM habit_checkins WHERE habit_id = ? AND date = ? AND kind = 'done'").get(id, date);
   if (!isDayDone(row, checkin)) progress.reverseXp(db, userId, `habit:${id}:${date}`, events);

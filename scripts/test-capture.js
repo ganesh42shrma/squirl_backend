@@ -6,10 +6,11 @@ const Database = require('better-sqlite3-multiple-ciphers');
 const db = new Database(':memory:');
 const stub = (path, exports) => { require.cache[require.resolve(path)] = { exports }; };
 let aiAnswer = null;
+let lastAiRequest = null;
 stub('../src/config/db', { getDb: () => db });
 stub('../src/core/logger', { info() {}, warn() {}, error() {} });
 stub('../src/plugins/insights/llm.client', {
-  structured: async (userId, request) => { assert.equal(request.webSearch, false, 'capture never searches the web'); return { data: aiAnswer, provider: 'local' }; },
+  structured: async (userId, request) => { lastAiRequest = request; if (aiAnswer instanceof Error) throw aiAnswer; assert.equal(request.webSearch, false, 'capture never searches the web'); return { data: aiAnswer, provider: 'local' }; },
   parseJson: JSON.parse,
 });
 stub('../src/plugins/insights/suggestions.worker', { resetForUser() {} });
@@ -295,7 +296,7 @@ async function bankRowMatching() {
   // Two candidates: the capture's bank breaks the tie when it names one; otherwise nothing is merged.
   const sbiRow = bankRow({ amount: 414 }); const kotakRow = bankRow({ amount: 414, account: 'kotak', description: 'UPI/DR/2' });
   assert.equal(capture.commit(a, { text: 'lunch 414 kotak upi' }, opts).data.created[0].id, kotakRow);
-  const sbiRow2 = bankRow({ amount: 415 }); bankRow({ amount: 415, description: 'UPI/DR/3' });
+  const sbiRow2 = bankRow({ amount: 415 }); bankRow({ amount: 415, account: 'kotak', description: 'UPI/DR/3' }); // different accounts: genuinely can't tell (identical rows are covered in the pass-3 block)
   assert.ok(!capture.commit(a, { text: 'lunch 415' }, opts).data.created[0].matched, 'ambiguous: save a separate row');
   assert.ok(sbiRow && sbiRow2);
   // The account the capture guessed is not required to agree with the bank row.
@@ -459,7 +460,7 @@ async function reviewFixes() {
   const same1 = bankRow({ amount: 531, account: 'sbi', description: 'UPI/DR/3/A' }); const same2 = bankRow({ amount: 531, account: 'kotak', description: 'UPI/DR/4/B' });
   assert.equal(saveId('chai 531 kotak upi').id, same2, 'same day: the named bank decides');
   assert.ok(same1);
-  const tied = [bankRow({ amount: 532, description: 'UPI/DR/5/C' }), bankRow({ amount: 532, description: 'UPI/DR/6/D' })];
+  const tied = [bankRow({ amount: 532, date: '2026-11-14', description: 'UPI/DR/5/C' }), bankRow({ amount: 532, date: '2026-11-16', description: 'UPI/DR/6/D' })]; // neither on the capture's day
   assert.ok(!saveId('chai 532 upi').matched, 'truly ambiguous: a separate row, nothing merged');
   assert.ok(tied.every((id) => row(id).capture_id === null));
 
@@ -563,6 +564,184 @@ async function reviewFixes() {
   capture.dismiss(a, withNote.inbox[0]._id);
 }
 
+// Pass 3: dates, directions and quantities in multi-part lines, named banks, and how duplicate-prone bank rows pair up.
+async function passThree() {
+  const ctx = { ...capture.contextFor(db, a, now), bankAccount: 'kotak' }; // "kotak" = the usual-bank guess
+  const all = (text) => parser.parse(text, ctx).actions;
+  const one = (text) => all(text)[0];
+  const summary = (text) => all(text).map((x) => [x.type, x.data.direction, x.data.amount, x.data.description]);
+  const bankRow = (extra = {}) => insertTransaction(db, a, { date: TODAY, description: 'UPI/DR/123456789012/STALL', amount: 1, source: 'sms', account: 'sbi', paymentMode: 'upi', ...extra });
+  const row = (id) => db.prepare('SELECT * FROM transactions WHERE id = ?').get(id);
+  const count = (paise) => db.prepare('SELECT count(*) FROM active_transactions WHERE user_id = ? AND amount_paise = ?').pluck().get(a, paise);
+  const lastCapture = () => db.prepare('SELECT id FROM captures WHERE user_id = ? ORDER BY rowid DESC LIMIT 1').pluck().get(a);
+
+  // 1. Money still to be paid looks ahead; a past-tense verb or a plain purchase names a day that has gone by.
+  for (const [text, due] of [['pay rent 15000 fri', '2026-11-20'], ['electricity bill 1840 due fri', '2026-11-20'], ['school fees 40000 due monday', '2026-11-16'], ['buy gift 500 sat', '2026-11-21']]) {
+    const r = one(text);
+    assert.deepEqual([r.type, r.data.dueDate], ['task', due], `${text} is still to do`);
+  }
+  assert.deepEqual([one('paid rent 15000 fri').type, one('paid rent 15000 fri').data.date], ['transaction', '2026-11-13']);
+  assert.equal(one('uber 230 sat').data.date, '2026-11-14');
+  assert.deepEqual([one('paid school fees 40000 monday').type, one('paid school fees 40000 monday').data.date], ['transaction', '2026-11-09']);
+
+  // 2. Later parts without a verb of their own keep the sentence's direction.
+  assert.deepEqual(summary('got 500 from dad and 300 from mom').map((x) => [x[1], x[2]]), [['credit', 500], ['credit', 300]]);
+  assert.deepEqual(summary('received 500 from raj and 300 from amit').map((x) => [x[1], x[2]]), [['credit', 500], ['credit', 300]]);
+  assert.deepEqual(summary('paid maid salary 8000 and driver salary 10000').map((x) => [x[1], x[2]]), [['debit', 8000], ['debit', 10000]]);
+  assert.deepEqual(summary('got 500 from dad and paid 300 to mom').map((x) => x[1]), ['credit', 'debit'], 'a part with its own verb keeps it');
+  assert.deepEqual(summary('chai 40 and samosa 20').map((x) => x[1]), ['debit', 'debit']);
+
+  // 3. A count after the comma is a quantity, not a second payment; real second payments still split.
+  for (const [text, amount] of [['paid 500 for lunch, 2 people', 500], ['spent 1200 at dmart, 3 bags', 1200], ['500 lunch, 2 beers', 500]]) {
+    assert.deepEqual(all(text).map((x) => x.data.amount), [amount], `${text} is one payment`);
+  }
+  assert.deepEqual(all('40 chai and 20 samosa').map((x) => x.data.amount), [40, 20]);
+  assert.deepEqual(all('paid 500 to ravi and 300 to amit').map((x) => x.data.amount), [500, 300]);
+  assert.deepEqual(all('chai 40, samosa 20 upi').map((x) => [x.data.amount, x.data.paymentMode]), [[40, 'upi'], [20, 'upi']]);
+  assert.deepEqual(all('bread and butter 60').map((x) => x.data.amount), [60]);
+
+  // 6. A bank named in the text is that payment's account; the usual-bank guess only fills a gap.
+  for (const [text, bank, mode, description] of [['petrol 2000 hdfc card', 'hdfc', 'card', 'Petrol'], ['petrol 2000 icici upi', 'icici', 'upi', 'Petrol'],
+    ['amazon 1299 axis credit card', 'axis', 'card', 'Amazon'], ['lunch 300 pnb upi', 'pnb', 'upi', 'Lunch'], ['dinner 900 yes bank card', 'yes', 'card', 'Dinner']]) {
+    const r = one(text);
+    assert.deepEqual([r.data.account, r.data.paymentMode, r.data.description], [bank, mode, description], text);
+  }
+  assert.equal(one('petrol 2000 upi').data.account, 'kotak', 'no bank named: the guess applies');
+  assert.equal(one('petrol 2000 sbi upi').data.account, 'sbi');
+  assert.deepEqual([one('yes 40 chai').type, one('yes 40 chai').data.account], ['transaction', undefined], '"yes" alone is just a word');
+  assert.equal(one('birthday card 100').data.paymentMode, undefined, 'still not a card payment');
+  assert.equal(one('chai 40 and samosa 20 hdfc upi').data.account, 'hdfc');
+
+  // 7. mon/tue/thu/fri are always days; only sun/sat/wed can be ordinary words.
+  for (const [text, date, description] of [['tue lunch 200', '2026-11-10', 'Lunch'], ['fri dinner 900 card', '2026-11-13', 'Dinner'], ['dinner fri 900', '2026-11-13', 'Dinner'], ['uber 230 sat night', '2026-11-14', 'Uber']]) {
+    const r = one(text);
+    assert.deepEqual([r.type, r.data.date, r.data.description], ['transaction', date, description], text);
+  }
+  assert.equal(one('sun lotion 300').data.date, TODAY); assert.equal(one('sat mat 500').data.date, TODAY);
+  assert.equal(one('sun lotion 300').data.description, 'Sun lotion');
+
+  // 8. More ways to say a past day; and a bare habit name naming a past day is a check-in.
+  assert.equal(one('paid 500 on 10 sep').data.date, '2026-09-10');
+  assert.equal(one('lunch 300 on 14th').data.date, '2026-11-14');
+  assert.deepEqual([one('chai 40 day before yesterday').data.date, one('chai 40 day before yesterday').data.description], ['2026-11-13', 'Chai']);
+  assert.deepEqual([one('dinner 800 last night').data.date, one('dinner 800 last night').data.description], ['2026-11-14', 'Dinner']);
+  assert.deepEqual([one('gym yesterday').type, one('gym yesterday').data.date], ['habit', '2026-11-14']);
+  assert.equal(one('gym tomorrow').type, 'task'); assert.equal(one('gym today 6pm').type, 'task');
+  assert.deepEqual([one('submit report on 14th').type, one('submit report on 14th').data.dueDate], ['task', '2026-12-14'], 'a to-do on "14th" still looks ahead');
+
+  // 4. A bare amount claims a bank row without changing it; a later description of the same payment still
+  // lands on that row (no duplicate), and each undo leaves the bank's record in place.
+  const plain = bankRow({ amount: 560, description: 'UPI/DR/21/P' });
+  const bare = capture.commit(a, { text: 'paid 560 upi' }, opts).data;
+  assert.equal(bare.created[0].id, plain); assert.deepEqual(bare.created[0].applied, {});
+  const lunch = capture.commit(a, { text: 'lunch 560 upi' }, opts).data;
+  assert.equal(lunch.created[0].id, plain, 'the claimed row is still the bank payment, so no second row');
+  assert.equal(count(56000), 1);
+  assert.equal(row(plain).notes, 'Lunch');
+  assert.deepEqual(capture.undo(a, lunch.capture._id, opts).data.kept, []);
+  assert.deepEqual([row(plain).notes, row(plain).category_id, row(plain).deleted_at], [null, null, null]);
+  assert.deepEqual(capture.undo(a, bare.capture._id, opts).data.kept, []);
+  assert.deepEqual([count(56000), row(plain).source], [1, 'sms'], 'the bank row survives both undos');
+  // An untouched row wins over one an earlier capture already claimed.
+  const claimed = bankRow({ amount: 561, description: 'UPI/DR/22/Q' });
+  const first = capture.commit(a, { text: 'paid 561 upi' }, opts).data;
+  assert.equal(first.created[0].id, claimed);
+  const fresh = bankRow({ amount: 561, description: 'UPI/DR/23/R' });
+  const second = capture.commit(a, { text: 'lunch 561 upi' }, opts).data;
+  assert.equal(second.created[0].id, fresh, 'the unclaimed row is preferred');
+  assert.deepEqual([count(56100), row(fresh).notes, row(claimed).notes], [2, 'Lunch', null]);
+  capture.undo(a, second.capture._id, opts); capture.undo(a, first.capture._id, opts);
+  assert.deepEqual([row(fresh).notes, row(claimed).deleted_at, row(fresh).deleted_at], [null, null, null]);
+  // A merged-by-SMS row (the person's description is final) is never annotated again.
+  const typedRow = capture.commit(a, { text: 'coffee 562 upi' }, opts).data.created[0].id;
+  const { mergeIntoCaptured: merge } = require('../src/plugins/sms/sms.reconcile');
+  merge(db, a, row(typedRow), { type: 'debit', amount: 562, date: TODAY, account: 'sbi', refNo: '123456789562', paymentMode: 'upi' });
+  assert.equal(row(typedRow).description_kept, 1);
+  assert.notEqual(capture.commit(a, { text: 'coffee 562 upi' }, opts).data.created[0].id, typedRow);
+  assert.equal(count(56200), 2);
+
+  // 5. Identical bank rows (a daily chai) pair with identical captures one-to-one, earliest first.
+  const twin1 = bankRow({ amount: 21, description: 'UPI/DR/24/S' }); const twin2 = bankRow({ amount: 21, description: 'UPI/DR/25/S' });
+  const c1 = capture.commit(a, { text: 'chai 21 upi' }, opts).data.created[0];
+  const c2 = capture.commit(a, { text: 'chai 21 upi' }, opts).data.created[0];
+  assert.deepEqual([c1.id, c2.id], [twin1, twin2], 'each capture takes its own bank row, earliest first');
+  assert.equal(count(2100), 2, 'two payments, two rows');
+  // One save with two identical payments claims two different rows.
+  const t1 = bankRow({ amount: 22, description: 'UPI/DR/26/T' }); const t2 = bankRow({ amount: 22, description: 'UPI/DR/27/T' });
+  const both = capture.commit(a, { text: 'chai 22 upi and tea 22 upi' }, opts).data.created;
+  assert.deepEqual(both.map((x) => x.id), [t1, t2]);
+  // A different day or account is still ambiguous, never a coin flip.
+  bankRow({ amount: 23, account: 'sbi', description: 'UPI/DR/28/U' }); bankRow({ amount: 23, account: 'kotak', description: 'UPI/DR/29/U' });
+  assert.ok(!capture.commit(a, { text: 'chai 23' }, opts).data.created[0].matched);
+
+  // 10. Undoing a repeat check-in for a day that has left the grace window reports it as kept instead of failing.
+  const water = ctx.habits.find((h) => h.name === 'Drink water');
+  const slot = capture.commit(a, { text: 'water 3 glasses' }, opts).data;
+  const repeat = capture.commit(a, { text: 'water 8 glasses' }, opts).data;
+  assert.equal(repeat.created[0].already, true);
+  const later = { now: new Date('2026-11-18T12:00:00+05:30') };
+  assert.throws(() => run(a, (c) => habitService.restoreQuantity(c, water.id, TODAY, 3), later), (err) => err.code === 'OUTSIDE_GRACE', 'the service itself refuses an old day');
+  const undone = capture.undo(a, repeat.capture._id, later).data;
+  assert.deepEqual(undone.kept.map((k) => k.id), [water.id], 'reported as kept');
+  assert.equal(db.prepare('SELECT quantity FROM habit_checkins WHERE habit_id = ? AND date = ?').pluck().get(water.id, TODAY), 8, 'the old day is left alone');
+  assert.equal(db.prepare("SELECT status FROM captures WHERE id = ?").pluck().get(repeat.capture._id), 'undone');
+  capture.undo(a, slot.capture._id, opts); // in the window again: removes the check-in and its XP
+  assert.equal(db.prepare('SELECT count(*) FROM habit_checkins WHERE habit_id = ?').pluck().get(water.id), 0);
+  assert.ok(lastCapture());
+}
+
+// The final review's findings: a described bank row is never re-used by a different payment, a similar-sized
+// second payment still splits, only verbs set a split sentence's direction, future intent vs past verbs, and
+// company names that start with a bank's name.
+async function finalReview() {
+  const ctx = { ...capture.contextFor(db, a, now), bankAccount: 'kotak' };
+  const all = (text) => parser.parse(text, ctx).actions;
+  const one = (text) => all(text)[0];
+  const count = (paise) => db.prepare('SELECT count(*) FROM active_transactions WHERE user_id = ? AND amount_paise = ?').pluck().get(a, paise);
+  const bankRow = (amount, payee) => insertTransaction(db, a, { date: TODAY, description: `UPI/DR/223344556677/${payee}`, amount, source: 'sms', account: 'sbi', paymentMode: 'upi' });
+
+  // Raj's payment is described by its capture; "petrol 507 upi" typed before its own SMS is a new payment.
+  const raj = bankRow(507, 'RAJ KUMAR');
+  capture.commit(a, { text: 'raj 507 upi' }, opts);
+  assert.equal(db.prepare('SELECT notes FROM transactions WHERE id = ?').pluck().get(raj), 'Raj');
+  capture.commit(a, { text: 'petrol 507 upi' }, opts);
+  assert.equal(count(50700), 2, 'petrol is its own row, not filed onto Raj’s');
+  assert.equal(db.prepare('SELECT category_id FROM transactions WHERE id = ?').pluck().get(raj), null, 'Raj’s row did not get Fuel');
+
+  // Two bare amounts against one bank row: the second is a second payment, recorded somewhere.
+  bankRow(563, 'STALL');
+  capture.commit(a, { text: 'paid 563 upi' }, opts);
+  capture.commit(a, { text: 'paid 563 upi' }, opts);
+  assert.equal(count(56300), 2);
+
+  // Similar-sized second payments still split; small counts stay quantities.
+  assert.deepEqual(all('paid 200 auto and 300 lunch').map((x) => x.data.amount), [200, 300]);
+  assert.deepEqual(all('paid 500 for lunch, 200 tip').map((x) => x.data.amount), [500, 200]);
+  assert.deepEqual(all('paid 5000 for dinner, 12 people').map((x) => x.data.amount), [5000]);
+  assert.deepEqual(all('500 dinner, 10 tip').map((x) => x.data.amount), [500, 10], '₹10 is a real amount');
+  assert.deepEqual(all('500 dinner, 2 beers').map((x) => x.data.amount), [500]);
+
+  // Nouns don't set a split sentence's direction; verbs do.
+  assert.deepEqual(all('refund 200 and chai 40').map((x) => x.data.direction), ['credit', 'debit']);
+  assert.deepEqual(all('cashback 50 and recharge 299').map((x) => x.data.direction), ['credit', 'debit']);
+  assert.deepEqual(all('got refund 200 and cashback 30').map((x) => x.data.direction), ['credit', 'credit']);
+
+  // Future intent vs past verbs.
+  for (const text of ['to pay 500 fri', 'will pay rent 15000 fri', 'must pay 500 fri', 'need to buy gift 800 sat']) {
+    assert.equal(one(text).type, 'task', `${text} is still to do`);
+  }
+  for (const text of ['paid electricity due 1840 fri', 'paid due amount 500 fri']) {
+    assert.deepEqual([one(text).type, one(text).data.date], ['transaction', '2026-11-13'], `${text} already happened`);
+  }
+  assert.equal(one('pay rent 15000 fri').type, 'task', 'still a task');
+
+  // A company named after a bank is not the paying account.
+  assert.notEqual(one('hdfc life premium 15000').data.account, 'hdfc');
+  assert.match(one('hdfc life premium 15000').data.description, /hdfc life/i);
+  assert.notEqual(one('icici lombard insurance 9000').data.account, 'icici');
+  assert.equal(one('petrol 2000 hdfc card').data.account, 'hdfc', 'a plain bank name still counts');
+}
+
 async function inboxAndSearch() {
   const saved = capture.commit(a, { text: 'idea: weekend trip to Coorg' }, opts).data;
   assert.equal(saved.capture, null); assert.equal(saved.inbox.length, 1);
@@ -610,6 +789,82 @@ async function aiCases() {
   await assert.rejects(capture.preview(a, 'anything', { useAi: true, now }), /couldn’t read/);
 }
 
+async function categoryHelp() {
+  const cats = db.prepare('SELECT id, name, type FROM categories WHERE user_id = ? AND deleted_at IS NULL').all(a);
+  const food = cats.find((c) => c.type !== 'income' && /food|dining/i.test(c.name)) || cats.find((c) => c.type !== 'income');
+  const income = cats.find((c) => c.type === 'income');
+  const useCloud = (on) => db.prepare('UPDATE users SET ai_settings = ? WHERE id = ?').run(on ? JSON.stringify({ mode: 'api', provider: 'groq', keys: { groq: 'gsk_test' } }) : null, a);
+  const rulesOnly = await capture.preview(a, 'California burrito 200', { now });
+  assert.equal(rulesOnly.actions[0].data.category, undefined, 'precondition: the rules have no word for burrito');
+
+  // Local model (the default): no model call at all, the rules' answer comes back as it is.
+  lastAiRequest = null;
+  aiAnswer = { items: [{ index: 0, category: food.name }] };
+  let r = await capture.categorise(a, 'California burrito 200', { now });
+  assert.equal(lastAiRequest, null, 'a person without a cloud model never triggers a call');
+  assert.equal(r.actions[0].data.category, undefined);
+  assert.equal(r.aiCategories, 0);
+
+  // Cloud model chosen: the category is filled, and nothing else about the payment changes.
+  useCloud(true);
+  r = await capture.categorise(a, 'California burrito 200', { now });
+  assert.equal(r.actions[0].data.category, food.id);
+  assert.equal(r.actions[0].data.categoryName, food.name);
+  assert.equal(r.actions[0].aiCategory, true, 'the palette can say the category came from the AI');
+  assert.equal(r.aiCategories, 1);
+  assert.deepEqual({ ...r.actions[0].data, category: undefined, categoryName: undefined }, { ...rulesOnly.actions[0].data, category: undefined, categoryName: undefined }, 'amount, date, account and description are the rules\' own');
+  assert.doesNotMatch(lastAiRequest.prompt, /200|upi|20\d\d-/i, 'only the description and the category names are sent');
+  assert.match(lastAiRequest.prompt, /California burrito/);
+  assert.equal(lastAiRequest.webSearch, false);
+
+  // The rules' category always wins; no uncategorised payment means no call at all.
+  lastAiRequest = null;
+  r = await capture.categorise(a, 'swiggy 300', { now });
+  assert.equal(lastAiRequest, null);
+  assert.equal(r.actions[0].aiCategory, undefined);
+  r = await capture.categorise(a, 'remind me to call mom', { now });
+  assert.equal(lastAiRequest, null, 'tasks never go to the model');
+
+  // Several payments: only the uncategorised ones are asked about, and answers land on the right row.
+  r = await capture.categorise(a, 'swiggy 300; california burrito 200', { now });
+  assert.equal(r.actions[0].aiCategory, undefined);
+  assert.equal(r.actions[1].data.category, food.id);
+  assert.equal(JSON.parse(lastAiRequest.prompt).payments.length, 1);
+
+  // A bad answer is ignored: an invented name, a wrong-side category, a bad index, null, or junk.
+  for (const answer of [
+    { items: [{ index: 0, category: 'Made Up Category' }] },
+    { items: [{ index: 0, category: income.name }] },
+    { items: [{ index: 7, category: food.name }] },
+    { items: [{ index: 0, category: null }] },
+    { items: 'nope' },
+    {},
+  ]) {
+    aiAnswer = answer;
+    r = await capture.categorise(a, 'California burrito 200', { now });
+    assert.equal(r.actions[0].data.category, undefined, JSON.stringify(answer));
+    assert.equal(r.actions[0].type, 'transaction', 'the payment itself is still previewed');
+  }
+
+  // A model that is down, a rate limit, or the prompt guard blocking it never fails the preview.
+  aiAnswer = new Error('boom');
+  r = await capture.categorise(a, 'California burrito 200', { now });
+  assert.equal(r.actions[0].data.amount, 200);
+  aiAnswer = { items: [{ index: 0, category: food.name }] };
+  r = await capture.categorise(a, 'California burrito 200', { now, limiter: async () => { throw new Error('Too many attempts'); } });
+  assert.equal(r.actions[0].data.category, undefined, 'rate-limited: rules only');
+
+  // Saving the suggestion works like any category, and shows up in Sort out as automatic.
+  aiAnswer = { items: [{ index: 0, category: food.name }] };
+  r = await capture.categorise(a, 'California burrito 200', { now });
+  const saved = capture.commit(a, { text: 'California burrito 200', actions: r.actions.map(({ type, data }) => ({ type, data })), engine: 'ai' }, opts);
+  const row = db.prepare('SELECT category_id, auto_categorized FROM transactions WHERE capture_id = ?').get(saved.data.capture._id);
+  assert.deepEqual({ ...row }, { category_id: food.id, auto_categorized: 1 });
+  useCloud(false);
+  assert.equal(schemas.categorise.safeParse({ body: { text: 'x' } }).success, true);
+  assert.equal(schemas.categorise.safeParse({ body: { text: 'x', ai: true } }).success, false, 'unknown fields are refused');
+}
+
 function validation() {
   const ok = (body) => schemas.commit.safeParse({ body }).success;
   assert.equal(ok({ text: 'chai 40' }), true);
@@ -653,8 +908,11 @@ async function notifications() {
   await habitDates();
   await inboxAndSearch();
   await reviewFixes();
+  await passThree();
+  await finalReview();
   await idempotency();
   await aiCases();
+  await categoryHelp();
   validation();
   await notifications();
   console.log('capture tests passed');

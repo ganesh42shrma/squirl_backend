@@ -36,13 +36,21 @@ function capturedMatches(db, userId, doc) {
   return narrow(rows, [(r) => r.date === dayOf(doc), (r) => r.account === doc.account]);
 }
 
-/** Applies each preference in turn, but only while it leaves at least one row: never narrows to nothing. */
+/**
+ * Applies each preference in turn, but only while it leaves at least one row: never narrows to nothing.
+ * Rows still left that share a day and an account are interchangeable (a daily chai, two ₹21 payments), so
+ * the earliest-created one is taken and the others stay free for the next match; anything else is ambiguous.
+ */
 function narrow(rows, preferences) {
   let left = rows;
   for (const prefer of preferences) {
     if (left.length < 2) break;
     const kept = left.filter(prefer);
     if (kept.length) left = kept;
+  }
+  if (left.length > 1 && left.every((r) => r.date === left[0].date && r.account === left[0].account)) {
+    const order = (r) => `${r.created_at}|${String(r.rowid ?? 0).padStart(12, '0')}`;
+    return [left.reduce((first, r) => (order(r) < order(first) ? r : first))];
   }
   return left;
 }

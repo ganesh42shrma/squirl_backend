@@ -27,6 +27,7 @@ router.post('/devices', validate(schemas.device), async (req, res) => {
   sendSuccess(res, service.createDevice(req.user.id, req.body), { status: 201 });
 });
 router.delete('/devices/:id', validate(schemas.eventId), (req, res) => { service.revokeDevice(req.user.id, req.params.id); sendSuccess(res, null); });
+router.post('/devices/:id/remove', validate(schemas.eventId), (req, res) => { service.removeDevice(req.user.id, req.params.id); sendSuccess(res, null); });
 router.get('/events', validate(schemas.list), (req, res) => {
   const { items, meta } = service.listEvents(req.user.id, req.query);
   sendSuccess(res, { items }, { meta });

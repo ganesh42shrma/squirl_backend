@@ -46,11 +46,20 @@ function createDevice(userId, { name }) {
   return { id, name, token }; // Returned once; only its hash is stored.
 }
 function listDevices(userId) {
-  return getDb().prepare('SELECT id, name, created_at AS createdAt, last_seen_at AS lastSeenAt, revoked_at AS revokedAt FROM sms_devices WHERE user_id = ?').all(userId);
+  return getDb().prepare('SELECT id, name, created_at AS createdAt, last_seen_at AS lastSeenAt, revoked_at AS revokedAt FROM sms_devices WHERE user_id = ? AND deleted_at IS NULL').all(userId);
 }
 function revokeDevice(userId, id) {
-  const { changes } = getDb().prepare('UPDATE sms_devices SET revoked_at = ? WHERE user_id = ? AND id = ?').run(nowIso(), userId, id);
+  // Revoking a phone already removed from the list reports "not found", like any other row the person can't see.
+  const { changes } = getDb().prepare('UPDATE sms_devices SET revoked_at = ? WHERE user_id = ? AND id = ? AND deleted_at IS NULL').run(nowIso(), userId, id);
   if (!changes) throw AppError.notFound('SMS device not found');
+}
+/** Takes a disconnected phone off the list. Only a disconnected one: removing a live phone would hide a working connection. */
+function removeDevice(userId, id) {
+  const db = getDb();
+  const device = db.prepare('SELECT revoked_at FROM sms_devices WHERE user_id = ? AND id = ? AND deleted_at IS NULL').get(userId, id);
+  if (!device) throw AppError.notFound('SMS device not found');
+  if (!device.revoked_at) throw AppError.conflict('Disconnect this phone first, then you can remove it.', 'SMS_DEVICE_CONNECTED');
+  db.prepare('UPDATE sms_devices SET deleted_at = ? WHERE user_id = ? AND id = ?').run(nowIso(), userId, id);
 }
 function authenticate(authorization) {
   const token = /^Bearer ([a-f0-9]{24}\.[\w-]{43})$/.exec(authorization || '')?.[1];
@@ -172,4 +181,4 @@ function reviewEvent(userId, id, fields) {
   })();
 }
 
-module.exports = { senderHeader, listAccounts, saveAccounts, createDevice, listDevices, revokeDevice, authenticate, ingest, listEvents, reviewEvent };
+module.exports = { senderHeader, listAccounts, saveAccounts, createDevice, listDevices, revokeDevice, removeDevice, authenticate, ingest, listEvents, reviewEvent };

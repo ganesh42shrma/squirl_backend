@@ -12,6 +12,12 @@ router.post('/preview', validate(schemas.preview), async (req, res) => {
   if (req.body.ai) await rateLimit.hit(`capture-ai:${req.user.id}`, { limit: 20, windowSec: 60 });
   sendSuccess(res, await service.preview(req.user.id, req.body.text, { useAi: req.body.ai }));
 });
+// The preview as you type, plus an AI-suggested category for payments the rules couldn't file. It runs
+// after a pause in typing, so it is capped on its own counter; hitting the cap just means no suggestion.
+router.post('/categorise', validate(schemas.categorise), async (req, res) => {
+  const limiter = () => rateLimit.hit(`capture-category:${req.user.id}`, { limit: 40, windowSec: 60 });
+  sendSuccess(res, await service.categorise(req.user.id, req.body.text, { limiter }));
+});
 router.post('/', validate(schemas.commit), (req, res) => {
   const { data, events } = service.commit(req.user.id, req.body);
   sendSuccess(res, data, { status: 201, events });

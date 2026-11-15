@@ -220,6 +220,7 @@ async function main() {
   sms.revokeDevice(a, revoked.id);
   assert.throws(() => sms.authenticate(`Bearer ${revoked.token}`), (e) => e.statusCode === 401);
   assert.throws(() => deliver(sbi(50), 'TEST-SBI', {}, snapshot), (e) => e.statusCode === 401, 'recheck auth inside the write transaction');
+  await removingPhones(snapshot, revoked);
   db.prepare('UPDATE users SET password_changed_at = ? WHERE id = ?').run('2026-11-15T09:00:00Z', b);
   assert.throws(() => sms.authenticate(`Bearer ${otherCredentials.token}`), (e) => e.statusCode === 401);
   await users.resetFinancialData(a);
@@ -229,6 +230,44 @@ async function main() {
   assert.equal(db.prepare('SELECT count(*) FROM sms_accounts WHERE user_id = ? AND deleted_at IS NULL').pluck().get(b), 1);
   assert.equal(db.pragma('foreign_key_check').length, 0);
   console.log('SMS: migration preservation, bank parsing, pairing/auth/CSRF, review, dedupe, transfers, both import orders, undo, deletion and reset passed.');
+}
+
+// A disconnected phone can be taken off the list. It is hidden, not deleted: its messages are what recognise
+// a repeat of the same bank text, so they must survive.
+async function removingPhones(revokedSnapshot, revokedPhone) {
+  const phone = sms.createDevice(a, { name: 'Old phone' });
+  const old = sms.authenticate(`Bearer ${phone.token}`);
+  const body = sbi(95, { amount: '77.00' });
+  const first = deliver(body, 'TEST-SBI', {}, old);
+  assert.equal(first.status, 'captured');
+  const events = () => db.prepare('SELECT count(*) FROM sms_events WHERE device_id = ? AND deleted_at IS NULL').pluck().get(phone.id);
+  assert.equal(events(), 1);
+
+  // A phone still connected can't be removed: disconnect first.
+  assert.throws(() => sms.removeDevice(a, phone.id), (e) => e.statusCode === 409 && e.code === 'SMS_DEVICE_CONNECTED');
+  assert.ok(sms.listDevices(a).some((d) => d.id === phone.id));
+
+  sms.revokeDevice(a, phone.id);
+  assert.ok(sms.listDevices(a).find((d) => d.id === phone.id).revokedAt, 'disconnected phones still show, as disconnected');
+  assert.throws(() => sms.removeDevice(b, phone.id), (e) => e.statusCode === 404, 'another account cannot remove it');
+  assert.ok(sms.listDevices(a).some((d) => d.id === phone.id));
+
+  sms.removeDevice(a, phone.id);
+  assert.equal(sms.listDevices(a).some((d) => d.id === phone.id), false, 'gone from the list');
+  assert.equal(sms.listDevices(a).some((d) => d.id === revokedPhone.id), true, 'other phones are untouched');
+  assert.equal(events(), 1, 'its messages are kept');
+  assert.equal(row(first.transactionId).amount_paise, 7700, 'and so is the payment they created');
+  assert.throws(() => sms.removeDevice(a, phone.id), (e) => e.statusCode === 404, 'removing twice is a not-found, not a crash');
+  assert.throws(() => sms.revokeDevice(a, phone.id), (e) => e.statusCode === 404);
+  assert.throws(() => sms.authenticate(`Bearer ${phone.token}`), (e) => e.statusCode === 401, 'a removed phone never works again');
+
+  // The same bank text arriving from a newly paired phone is still recognised, not added a second time.
+  const fresh = sms.createDevice(a, { name: 'New phone' });
+  const again = deliver(body, 'TEST-SBI', {}, sms.authenticate(`Bearer ${fresh.token}`));
+  assert.notEqual(again.status, 'captured', 'a repeat after removing the old phone is not a new payment');
+  assert.equal(db.prepare('SELECT count(*) FROM active_transactions WHERE user_id = ? AND ref_no = ?').pluck().get(a, ref(95)), 1);
+  sms.revokeDevice(a, fresh.id);
+  assert.equal(db.pragma('foreign_key_check').length, 0);
 }
 
 // A payment typed into Quick Capture first, then the bank's SMS: one row, with the person's own words.
@@ -281,7 +320,7 @@ async function quickCaptureDuplicates() {
   assert.equal(prompts(), promptsHand + 1, 'a new payment still gets its prompt');
 
   // Two captured candidates: can't tell which, so nothing is merged and the SMS is a new row.
-  const c1 = typed(9, { captureId: 'cap-9a' }); const c2 = typed(9, { captureId: 'cap-9b' });
+  const c1 = typed(9, { captureId: 'cap-9a' }); const c2 = typed(9, { captureId: 'cap-9b', account: 'kotak' }); // neither is in the SMS's account, and they differ: a true tie
   const amb = deliver(sbi(72, { amount: '9.00' }));
   assert.ok(![c1, c2].includes(amb.transactionId));
   assert.deepEqual([row(c1).source, row(c2).source], ['manual', 'manual']);
@@ -322,6 +361,19 @@ async function quickCaptureDuplicates() {
   const wrongBank = typed(19, { captureId: 'cap-19k', account: 'kotak', date: '2026-11-15' }); const rightBank = typed(19, { captureId: 'cap-19s', account: 'sbi', date: '2026-11-15' });
   assert.equal(deliver(sbi(86, { amount: '19.00' })).transactionId, rightBank);
   assert.equal(row(wrongBank).source, 'manual');
+
+  // Two identical captures (same day, same account: "chai 21 upi" twice) and two identical SMS pair one-to-one,
+  // earliest capture first; each SMS can claim only one row, so the result is two rows, not four.
+  const same1 = typed(21, { captureId: 'cap-21a', account: 'sbi', date: '2026-11-15' }); const same2 = typed(21, { captureId: 'cap-21b', account: 'sbi', date: '2026-11-15' });
+  assert.equal(deliver(sbi(87, { amount: '21.00' })).transactionId, same1, 'the earliest identical capture is taken first');
+  assert.equal(deliver(sbi(88, { amount: '21.00' })).transactionId, same2, 'the second SMS takes the other one');
+  assert.equal(db.prepare('SELECT count(*) FROM active_transactions WHERE user_id = ? AND amount_paise = 2100').pluck().get(a), 2, 'two chais, two SMS, two rows');
+  assert.equal(deliver(sbi(89, { amount: '21.00' })).status, 'captured', 'a third SMS is a new payment');
+  assert.equal(db.prepare('SELECT count(*) FROM active_transactions WHERE user_id = ? AND amount_paise = 2100').pluck().get(a), 3);
+  // Captures that differ by day or account stay ambiguous: nothing is merged.
+  const dayA = typed(24, { captureId: 'cap-24a', date: '2026-11-14' }); const dayB = typed(24, { captureId: 'cap-24b', date: '2026-11-16' });
+  const tie = deliver(sbi(91, { amount: '24.00' }));
+  assert.ok(![dayA, dayB].includes(tie.transactionId), 'neither is on the SMS\'s day, so it is a true tie');
 
   // Reviewing an unreadable message by hand merges the same way.
   const reviewTyped = typed(15, { date: '2026-11-15' });

@@ -17,6 +17,7 @@
 const { getDb } = require('../../config/db');
 const { createHash } = require('node:crypto');
 const AppError = require('../../core/AppError');
+const logger = require('../../core/logger');
 const { newId, nowIso, toPaise, fromPaise } = require('../../core/sql');
 const { insertTransaction } = require('../transactions/transaction.model');
 const { run } = require('../tasks/context');
@@ -81,17 +82,27 @@ const toCapture = (row) => ({
  * and amount, a day either side, and the person hasn't said anything about it yet (no note, or no category).
  * Exactly one qualifies, or none does. Cash never matches (the bank has no record of cash). The account is
  * NOT required to match (the capture may have guessed it). With several candidates the one on the same day
- * wins, then the one in the named account; only then is it ambiguous. `claimed` holds rows an earlier action
+ * wins, then the one in the named account; rows still identical after that (same day and account) are
+ * interchangeable, so the earliest-created is taken; anything else is ambiguous. `claimed` holds rows an earlier action
  * of the same save already used.
  */
 function findBankPayment(db, userId, data, claimed = new Set()) {
   if (String(data.paymentMode || '').toLowerCase() === 'cash') return null;
-  const rows = db.prepare(`SELECT * FROM active_transactions WHERE user_id = ? AND source IN ('sms', 'import') AND capture_id IS NULL
+  // A bare amount ("550") carries no words of its own, so it may only claim a row nobody has touched yet.
+  const bare = !data.category && data.description === DEFAULT_DESCRIPTIONS[data.direction];
+  // A row an earlier capture already described ("raj 500" gave it a note) belongs to that payment: a later
+  // "petrol 500" is a different payment, not more detail for Raj's. Only a row the earlier capture left fully
+  // blank (a bare amount) can still be described.
+  const rows = db.prepare(`SELECT * FROM active_transactions WHERE user_id = ? AND source IN ('sms', 'import') AND description_kept = 0
     AND transfer_id IS NULL AND type = ? AND amount_paise = ?
     AND date BETWEEN date(?, '-${BANK_MATCH_DAYS} day') AND date(?, '+${BANK_MATCH_DAYS} day')
-    AND (COALESCE(notes, '') = '' OR category_id IS NULL)`)
-    .all(userId, data.direction, toPaise(data.amount), data.date, data.date).filter((r) => !claimed.has(r.id));
-  const left = narrow(rows, [(r) => r.date === data.date, (r) => Boolean(data.account) && r.account === data.account.toLowerCase()]);
+    AND (COALESCE(notes, '') = '' OR category_id IS NULL)
+    AND (capture_id IS NULL OR (COALESCE(notes, '') = '' AND category_id IS NULL))`)
+    .all(userId, data.direction, toPaise(data.amount), data.date, data.date)
+    .filter((r) => !claimed.has(r.id) && !(bare && r.capture_id != null));
+  // Rows no earlier capture has touched come first, so a bare "550" that claimed a bank row can't make
+  // "lunch 550" add a duplicate while an unclaimed one is still there.
+  const left = narrow(rows, [(r) => r.capture_id == null, (r) => r.date === data.date, (r) => Boolean(data.account) && r.account === data.account.toLowerCase()]);
   return left.length === 1 ? left[0] : null;
 }
 
@@ -105,6 +116,32 @@ function withBankMatches(db, userId, actions) {
     claimed.add(row.id);
     return { ...action, match: { description: row.description.slice(0, 80), date: row.date, account: row.account } };
   });
+}
+
+/**
+ * The rules preview, plus a category from the person's cloud AI model for any payment the rules left
+ * uncategorised. Only the category is ever filled: the amount, date, account and bank match stay exactly
+ * as the rules read them. It is a best-effort extra, so no model trouble (no cloud model chosen, slow,
+ * rate-limited, a garbled answer) ever fails the preview; the person just sees the rules' result.
+ */
+async function categorise(userId, text, { now, limiter } = {}) {
+  const base = await preview(userId, text, { now });
+  const open = base.actions.map((a, i) => i).filter((i) => base.actions[i].type === 'transaction' && !base.actions[i].data.category);
+  if (!open.length || !ai.usesCloudEngine(userId)) return { ...base, aiCategories: 0 };
+  try {
+    if (limiter) await limiter();
+    const categories = contextFor(getDb(), userId, now).categories;
+    const found = await ai.suggestCategories(userId, open.map((i) => ({ description: base.actions[i].data.description, direction: base.actions[i].data.direction })), categories);
+    if (!found.size) return { ...base, aiCategories: 0 };
+    const actions = base.actions.map((action, i) => {
+      const category = found.get(open.indexOf(i));
+      return category ? { ...action, aiCategory: true, data: { ...action.data, category: category.id, categoryName: category.name } } : action;
+    });
+    return { ...base, actions, aiCategories: found.size };
+  } catch (err) {
+    logger.warn('Quick Capture category suggestion skipped', { code: err.code || err.name });
+    return { ...base, aiCategories: 0 };
+  }
 }
 
 async function preview(userId, text, { useAi = false, now } = {}) {
@@ -308,8 +345,8 @@ function undo(userId, id, { now } = {}) {
         if (item.already) {
           // Through the habit service, so XP the repeat paid by crossing the target is taken back too.
           try { habits.restoreQuantity(ctx, item.id, item.date, item.previousQuantity); } catch (err) {
-            if (err.statusCode !== 404) throw err;
-            kept.push(item); // the habit was deleted since
+            if (err.statusCode !== 404 && err.statusCode !== 400) throw err;
+            kept.push(item); // the habit was deleted since, or the day is too old to change
           }
           continue;
         }
@@ -380,4 +417,4 @@ function search(userId, q) {
   return [...taskRows, ...habitRows, ...transactions, ...goals, ...bills, ...inbox];
 }
 
-module.exports = { preview, commit, undo, listInbox, dismiss, inboxSummary, search, contextFor, INBOX_LIMIT };
+module.exports = { preview, categorise, commit, undo, listInbox, dismiss, inboxSummary, search, contextFor, INBOX_LIMIT };

@@ -45,6 +45,7 @@ const action = z.discriminatedUnion('type', [
 ]);
 
 const preview = z.object({ body: z.object({ text, ai: z.boolean().default(false) }).strict() });
+const categorise = z.object({ body: z.object({ text }).strict() });
 const commit = z.object({
   body: z.object({
     text,
@@ -57,4 +58,4 @@ const commit = z.object({
 const search = z.object({ query: z.object({ q: z.string().trim().min(2).max(100) }) });
 const byId = z.object({ params: idParams });
 
-module.exports = { preview, commit, search, byId, action };
+module.exports = { preview, categorise, commit, search, byId, action };

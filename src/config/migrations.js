@@ -759,4 +759,10 @@ module.exports = [
   ALTER TABLE captures ADD COLUMN request_hash TEXT;
   ALTER TABLE transactions ADD COLUMN description_kept INTEGER NOT NULL DEFAULT 0;
   `,
+  // v25: a disconnected phone can be removed from the list. It is hidden, never deleted: sms_events point at
+  // their device (ON DELETE CASCADE), and those events are what recognises a bank text it has already seen,
+  // so erasing the phone would let the same payment be added twice.
+  `
+  ALTER TABLE sms_devices ADD COLUMN deleted_at TEXT;
+  `,
 ];

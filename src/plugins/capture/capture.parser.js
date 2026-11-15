@@ -49,7 +49,9 @@ const BANKS = [
   ['idfc(?:\\s+first)?', 'idfc'], ['indusind', 'indusind'], ['federal\\s+bank', 'federal'], ['canara', 'canara'],
   ['yes\\s+bank', 'yes'], ['bob(?=\\s+(?:bank|card|upi|credit|debit))', 'bob'],
 ];
-const ACCOUNTS = BANKS.map(([word, name]) => [new RegExp(`\\b${word}(?:\\s+bank)?\\b`, 'i'), name]);
+// "hdfc life premium", "icici lombard", "kotak mutual fund" name a company, not the account that paid.
+const NOT_A_BANK = '(?!\\s+(?:life|lombard|prudential|ergo|housing|mutual|securities|amc|sec)\\b)';
+const ACCOUNTS = BANKS.map(([word, name]) => [new RegExp(`\\b${word}(?:\\s+bank)?\\b${NOT_A_BANK}`, 'i'), name]);
 const BANK_WORDS = BANKS.map(([word]) => word).join('|');
 // Words that may follow a payment's amount without being part of what it was for: a mode, a bank, "done", filler.
 const NOISE = new RegExp(`\\b(?:upi|gpay|google pay|phonepe|paytm|bhim|card|net ?banking|neft|imps|rtgs|cash|${BANK_WORDS}|done|did|completed?|finished|checked in)\\b`, 'gi');
@@ -243,10 +245,13 @@ const RECENT_MONTH_DAYS = 60;
 const RECENT_BARE_DAYS = 7; // "on 14th" with no month: only a day this recent reads as already gone by
 // Something still to be paid ("pay rent 15000 fri", "electricity bill 1840 due fri") looks ahead; a past-tense
 // verb ("paid 500 on 10 sep") always means a day that has gone by.
-const FUTURE_INTENT = /\bdue\b|^\s*(?:pay|buy|send|give|book|renew)\b/i;
+// "to pay 500 fri", "will pay rent fri" and "need to buy gift sat" look ahead too.
+const FUTURE_INTENT = /\bdue\b|^\s*(?:(?:i\s+)?(?:will|to|must|should|need to|have to)\s+)?(?:pay|buy|send|give|book|renew)\b/i;
+const LEAD_VERB = /\b(?:spent|spend|paid|pay|bought|buy|gave|give|sent|send|received|recieved|earned|credited|got|sold)\b/i;
 const PAST_VERB = /\b(?:paid|spent|bought|received|recieved|earned|credited|refunded|got|gave|sent|sold)\b/i;
 function pastWhen(when, today, clause = '') {
-  if (FUTURE_INTENT.test(clause)) return when;
+  // A past-tense verb outranks "due": "paid electricity due 1840 fri" already happened.
+  if (FUTURE_INTENT.test(clause) && !PAST_VERB.test(clause)) return when;
   const cal = when.calendar;
   if (cal?.back && when.date === cal.forward) {
     const within = PAST_VERB.test(clause) ? when.date > today : daysBetween(cal.back, today) <= (cal.bare ? RECENT_BARE_DAYS : RECENT_MONTH_DAYS);
@@ -451,15 +456,17 @@ function splitPayments(clause, today) {
   for (let i = 1; i < parts.length; i += 1) {
     if (shapes[i] !== 'amount-first') continue;
     const info = extractAmount(extractWhen(parts[i], today).rest);
-    const small = !info.marked && Number.isInteger(info.amount) && info.amount <= 10 && firstAmount >= info.amount * 5;
+    const small = !info.marked && Number.isInteger(info.amount) && info.amount < 10 && firstAmount >= info.amount * 5;
     const bare = !STRONG_VERB.test(parts[i]) && !/\b(?:for|to|at|on|from)\b/i.test(parts[i]);
-    if (small || (OPENS_WITH_SPEND.test(parts[0]) && bare)) return whole;
+    // "paid 500 for lunch, 2 people" is a count; "paid 200 auto and 300 lunch" is a second payment of similar size.
+    if (small || (OPENS_WITH_SPEND.test(parts[0]) && bare && firstAmount >= info.amount * 5)) return whole;
   }
   const inherit = sharedWords(parts[parts.length - 1], today);
   // The sentence's direction comes from its first part, when that part has a verb ("paid maid salary 8000 and
   // driver salary 10000" is money out twice); later parts with a verb or sign of their own keep it.
   const first = extractAmount(extractWhen(parts[0], today).rest);
-  const lead = STRONG_VERB.test(parts[0]) ? directionOf(parts[0], first.sign) : undefined;
+  // Only a real verb sets the sentence's direction; nouns like "refund" or "cashback" describe that part alone.
+  const lead = LEAD_VERB.test(parts[0]) ? directionOf(parts[0], first.sign) : undefined;
   return parts.map((text, i) => ({
     text,
     inherit: {
