@@ -7,7 +7,7 @@ const Database = require('better-sqlite3-multiple-ciphers');
 const t = require('../deployment/release-tools');
 const { publish } = require('../deployment/publish');
 const { deploy } = require('../deployment/deploy');
-const { units } = require('../deployment/install');
+const { install, units } = require('../deployment/install');
 process.env.GIT_CONFIG_GLOBAL = '/dev/null'; process.env.GIT_CONFIG_NOSYSTEM = '1';
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'squirl-deploy-test-'));
 const sources = path.join(scratch, 'sources'); t.mkdir(sources);
@@ -73,6 +73,40 @@ const update = (extra = {}) => deploy(config, { check: stageChecks, control, hea
 const changeFrontend = (text) => { fs.writeFileSync(path.join(frontend, 'version.txt'), text); commit(frontend, text); };
 const migrate = (sql) => { fs.writeFileSync(path.join(backend, 'src/config/migrations.js'), originalMigrations.replace(/\];\s*$/, `\`${sql}\`,\n];\n`)); commit(backend, 'Synthetic migration change'); };
 
+async function testInstaller() {
+  const installRoot = path.join(scratch, 'installed controller');
+  const home = path.join(scratch, 'test-home');
+  fs.copyFileSync(envFile, path.join(backend, '.env'));
+  // The installer copies its own runtime; all Git/network and systemd commands below are simulated.
+  let failure = null;
+  const commands = [];
+  const execute = (command, args) => {
+    commands.push({ command, args });
+    if (command === 'systemd-analyze' && failure === 'syntax') throw new Error('Synthetic unit syntax error');
+    if (command === 'systemctl' && args.includes('--property=LoadState')) return failure === args[2] ? 'bad-setting' : 'loaded';
+    if (command === 'systemctl' && args.includes('--property=ActiveState')) return failure === 'inactive' && args[2] === 'squirl-deploy.timer' ? 'inactive' : 'active';
+    return '';
+  };
+  const setup = () => install({ source: backend, root: installRoot, home, execute, health: async () => true });
+  const installed = await setup();
+  const appFile = path.join(home, '.config/systemd/user/squirl.service.d/release.conf');
+  const serviceFile = path.join(home, '.config/systemd/user/squirl-deploy.service');
+  for (const file of [appFile, serviceFile]) {
+    const directory = fs.readFileSync(file, 'utf8').split('\n').find((line) => line.startsWith('WorkingDirectory=')).slice('WorkingDirectory='.length);
+    assert(path.isAbsolute(directory), 'systemd requires an absolute WorkingDirectory with no surrounding quotes');
+    assert(fs.statSync(directory).isDirectory(), 'spaces in a literal WorkingDirectory must still refer to the real folder');
+  }
+  assert.equal(installed.root, installRoot);
+  assert(commands.findIndex((c) => c.command === 'systemd-analyze') < commands.findIndex((c) => c.args.includes('enable')));
+  for (const [mode, error] of [['syntax', /unit syntax error/], ['squirl.service', /squirl.service did not load/], ['squirl-deploy.service', /squirl-deploy.service did not load/], ['inactive', /timer did not become active/]]) {
+    failure = mode; commands.length = 0;
+    await assert.rejects(setup(), error, 'installation must reject invalid units or an inactive timer');
+    if (mode !== 'inactive') assert(!commands.some((c) => c.args.includes('enable')));
+    assert(!commands.some((c) => c.command === 'systemctl' && ['stop', 'start', 'restart'].includes(c.args[1]) && c.args[2] === 'squirl.service'), 'installation never restarts the running app');
+  }
+  assert.equal(fs.readFileSync(path.join(backend, '.env'), 'utf8'), fs.readFileSync(envFile, 'utf8'));
+}
+
 async function main() {
   assert.throws(() => t.run(process.execPath, ['-e', "console.error('https://synthetic-token@example.invalid/repo');process.exit(1)"]), (error) => !error.message.includes('synthetic-token'));
   const first = await release();
@@ -132,6 +166,7 @@ async function main() {
   const savedDb = `${dbFile}.saved`; fs.renameSync(dbFile, savedDb);
   await assert.rejects(update(), /existing absolute DB_PATH/); fs.renameSync(savedDb, dbFile);
   assert(running);
+  await testInstaller();
   fs.writeFileSync(path.join(backend, '.env'), 'synthetic-secret'); t.git(backend, ['add', '-f', '.env']); t.git(backend, ['commit', '-m', 'Forbidden test file']);
   await assert.rejects(release(), /forbidden file/);
   fs.writeFileSync(path.join(frontend, 'dirty.txt'), 'uncommitted');
@@ -140,6 +175,6 @@ async function main() {
   assert(text.app.includes('current/squirl_backend')); assert(text.app.includes('DOTENV_CONFIG_PATH='));
   assert(text.service.includes('Type=oneshot')); assert(text.timer.includes('OnUnitInactiveSec=60s'));
   assert.equal(fs.readFileSync(envFile, 'utf8').includes(key), true, 'production env is preserved');
-  console.log('Passed: pinned two-repo publication, concurrent publish guard, staged checks, marker-only deployment, encrypted backup, trial migrations, health rollback without data loss, schema-change recovery, missing drive, secret/dirty-tree rejection, and unit generation.');
+  console.log('Passed: pinned two-repo publication, concurrent publish guard, staged checks, marker-only deployment, encrypted backup, trial migrations, health rollback without data loss, schema-change recovery, missing drive, secret/dirty-tree rejection, literal systemd paths, and installer failure checks.');
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; }).finally(() => fs.rmSync(scratch, { recursive: true, force: true }));

@@ -53,7 +53,7 @@ symbolic links/submodules in source. It never commits files for you.
 ## One-time installation at home on Linux
 
 Keep the USB database mounted and the existing Squirl/Redis services healthy. Node 22.12+, npm,
-Git, tar, and `flock` are needed. Use the same Node version as `squirl.service`; your current
+Git, tar, `flock`, and `systemd-analyze` are needed. Use the same Node version as `squirl.service`; your current
 `/home/ganesh-sharma/.nvm/versions/node/v22.19.0/bin/node` satisfies this requirement.
 
 ```bash
@@ -62,7 +62,7 @@ git pull --ff-only origin main
 
 cd /home/ganesh-sharma/Desktop/development/alwaysOn/squirl_backend
 git pull --ff-only origin main
-command -v node npm git tar flock
+command -v node npm git tar flock systemd-analyze
 systemctl --user status squirl.service --no-pager
 npm run deploy:install
 systemctl --user status squirl-deploy.timer --no-pager
@@ -76,6 +76,8 @@ so the user timer and app can run after logout and reboot.
 
 The installer checks noninteractive Git access with the SSH agent disabled. If that succeeds,
 no extra credential setup is needed. If it fails, configure dedicated read-only deploy keys below.
+It validates the generated deployment units with `systemd-analyze`, checks that the app and
+deployment units load, and reports success only after the timer is active.
 
 It installs under `~/.local/share/squirl-deploy/` and adds a managed
 `~/.config/systemd/user/squirl.service.d/release.conf`. Your original checkouts, service unit,
@@ -83,6 +85,30 @@ production `.env`, database path, Redis service, and Tailscale Serve configurati
 The first `current` symlink points at your existing backend/frontend pair. Later it points at an
 isolated release. After activation, manually pulling the original checkouts does not change the
 running release; use the release command for application updates.
+
+### Repair an older install reporting "unit to trigger not loaded"
+
+The initial installer incorrectly quoted `WorkingDirectory` in both the deployment service and
+the app override. systemd treats those quotes as part of the path and rejects the units. On Linux,
+remove only those surrounding quotes from the two generated files, validate, and start the timer:
+
+```bash
+sed -i -E 's|^WorkingDirectory="(.*)"$|WorkingDirectory=\1|' \
+  ~/.config/systemd/user/squirl-deploy.service \
+  ~/.config/systemd/user/squirl.service.d/release.conf
+
+systemd-analyze --user verify \
+  ~/.config/systemd/user/squirl-deploy.service \
+  ~/.config/systemd/user/squirl-deploy.timer
+systemctl --user daemon-reload
+systemctl --user reset-failed squirl-deploy.service squirl-deploy.timer
+systemctl --user enable --now squirl-deploy.timer
+systemctl --user status squirl-deploy.timer --no-pager -l
+```
+
+The expected timer status is **active (waiting)**, or **active (running)** during a poll. This repair
+does not restart the app or change the database. Once the fixed installer is pushed and pulled,
+rerun `npm run deploy:install` so future installations retain the correction and validation.
 
 ## If Git requires an interactive login
 
@@ -175,6 +201,7 @@ itself, pull the backend checkout at home and rerun `npm run deploy:install`. Do
 
 `npm run test:deploy` exercises real disposable local Git remotes, publication races, staged checks,
 an encrypted synthetic database, migration-copy failures, healthy/failed activation, data-preserving
-code rollback, schema-change recovery, missing-drive protection, and generated systemd units.
+code rollback, schema-change recovery, missing-drive protection, literal systemd paths (including
+spaces), and rejection of invalid units or an inactive timer during installation.
 No GitHub account, real database, or installed Linux service is touched by those tests. Linux/systemd
 activation and Git credentials still need their one-time live check on the home laptop.
