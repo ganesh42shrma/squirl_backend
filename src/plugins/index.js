@@ -25,5 +25,6 @@ router.use('/tasks', require('./tasks/task.routes'));
 router.use('/capture', require('./capture/capture.routes'));
 router.use('/notifications', require('./notifications/notification.routes'));
 router.use('/sms', require('./sms/sms.routes').router);
+router.use('/media', require('./media/media.routes'));
 
 module.exports = router;

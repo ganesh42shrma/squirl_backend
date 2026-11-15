@@ -46,6 +46,24 @@ const config = Object.freeze({
     // Long enough to wait out the model loading from the USB stick (~3 min) on a cold start.
     timeoutMs: Number(process.env.LLM_TIMEOUT_MS) || 300000,
   }),
+  // Optional photo attachments. Left raw here: src/plugins/media/media.runtime.js validates it and
+  // decides whether the feature is on, so a bad value switches media off instead of stopping boot.
+  media: Object.freeze({
+    dir: process.env.MEDIA_DIR || '',
+    key: process.env.MEDIA_KEY || '',
+    maxBytes: Number(process.env.MEDIA_MAX_BYTES) || 8 * 1024 * 1024,
+    userQuotaBytes: Number(process.env.MEDIA_USER_QUOTA_BYTES) || 5 * 1024 * 1024 * 1024,
+    maxPerOwner: Number(process.env.MEDIA_MAX_PER_OWNER) || 10,
+    // Optional encrypted replica in S3-compatible storage; used only when the four required values are set.
+    s3: Object.freeze({
+      endpoint: process.env.S3_ENDPOINT || '',
+      bucket: process.env.S3_BUCKET || '',
+      region: process.env.S3_REGION || 'auto',
+      accessKeyId: process.env.S3_ACCESS_KEY_ID || '',
+      secretAccessKey: process.env.S3_SECRET_ACCESS_KEY || '',
+      pathStyle: process.env.S3_PATH_STYLE !== 'false',
+    }),
+  }),
   parser: Object.freeze({
     url: process.env.PARSER_SERVICE_URL || 'http://127.0.0.1:8000',
     timeoutMs: Number(process.env.PARSER_TIMEOUT_MS) || 60000,

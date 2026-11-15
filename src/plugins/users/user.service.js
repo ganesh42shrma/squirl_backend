@@ -9,6 +9,7 @@ const { contactsFor, normalizeName, familyPolicy } = require('./family');
 const familyWorker = require('./family.worker');
 const { normalizePhone, memberCandidate } = require('./contact.helper');
 const { insertCategory } = require('../categories/category.model');
+const media = require('../media/media.service');
 
 const findRow = (id) => getDb().prepare('SELECT * FROM users WHERE id = ?').get(id);
 const findByEmail = (email) => getDb().prepare('SELECT * FROM users WHERE email = ?').get(email);
@@ -118,10 +119,14 @@ async function changePassword(userId, { currentPassword, newPassword }) {
 async function deleteAccount(userId, { password }) {
   await assertPassword(userId, password);
   const db = getDb();
+  // Photo files live outside the database, so list them now and erase them once the rows are gone.
+  const photos = media.collectUserMedia(db, userId);
   db.transaction(() => {
     // Explicit order instead of relying on cascades: transactions and subcategories point at
     // categories with RESTRICT, so dependants go before what they depend on.
     for (const sql of [
+      'DELETE FROM attachments WHERE user_id = ?',
+      'DELETE FROM media WHERE user_id = ?',
       'DELETE FROM goals WHERE user_id = ?', // goal contributions and analyses cascade
       'DELETE FROM transactions WHERE user_id = ?', // transaction_tags cascade
       'DELETE FROM merchant_rules WHERE user_id = ?',
@@ -136,6 +141,7 @@ async function deleteAccount(userId, { password }) {
       db.prepare(sql).run(userId);
     }
   })();
+  media.eraseFiles(photos);
   logger.info('Account deleted', { userId });
 }
 
@@ -152,8 +158,12 @@ async function resetFinancialData(userId) {
     }
     seedDefaults(db, userId);
     db.prepare("UPDATE family_sync_jobs SET status = 'cancelled', updated_at = ? WHERE user_id = ?").run(now, userId);
-    return { archived };
+    // "Start fresh" also removes receipt photos on transactions and goals (the one deliberate exception to
+    // soft retention above: a photo is far more sensitive than a row). Task photos are not financial data.
+    return { archived, photos: media.detachOwnerTypes(db, userId, ['transaction', 'goal'], now) };
   })();
+  media.purgeFiles(result.photos); // files go only after the database change has committed
+  delete result.photos;
   require('../insights/suggestions.worker').resetForUser(userId);
   return result;
 }

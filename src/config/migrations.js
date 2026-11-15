@@ -765,4 +765,44 @@ module.exports = [
   `
   ALTER TABLE sms_devices ADD COLUMN deleted_at TEXT;
   `,
+  // v26: photo attachments. The images themselves live encrypted on the laptop's internal disk (never in this
+  // database, never on the USB drive); these tables only describe them. `media` is one stored image per
+  // account (the same picture uploaded twice by one account is stored once; never shared between accounts).
+  // `attachments` ties an image to a transaction, task or goal. owner_id is deliberately not a foreign key
+  // because it can point at three tables; the service checks the owner exists and belongs to the account.
+  // replica_state tracks the optional encrypted copy in S3-compatible storage; 'pending_delete' is a removed
+  // image whose remote copy still has to be deleted (the row is kept, soft-deleted, until that works).
+  `
+  CREATE TABLE media (
+    id               TEXT PRIMARY KEY,
+    user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    sha256           TEXT NOT NULL,                                -- of the image bytes, hex; used only to de-duplicate per account
+    mime             TEXT NOT NULL CHECK (mime IN ('image/jpeg', 'image/png', 'image/webp')),
+    size_bytes       INTEGER NOT NULL CHECK (size_bytes > 0),      -- of the image, before encryption
+    width            INTEGER,
+    height           INTEGER,
+    replica_state    TEXT NOT NULL DEFAULT 'none' CHECK (replica_state IN ('none', 'pending', 'done', 'failed', 'pending_delete')),
+    replica_attempts INTEGER NOT NULL DEFAULT 0,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    deleted_at       TEXT
+  );
+  CREATE UNIQUE INDEX media_user_sha ON media (user_id, sha256) WHERE deleted_at IS NULL;
+  CREATE INDEX media_replica ON media (replica_state) WHERE replica_state IN ('pending', 'failed', 'pending_delete');
+  CREATE VIEW active_media AS SELECT rowid AS rowid, * FROM media WHERE deleted_at IS NULL;
+
+  CREATE TABLE attachments (
+    id         TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    media_id   TEXT NOT NULL REFERENCES media(id),
+    owner_type TEXT NOT NULL CHECK (owner_type IN ('transaction', 'task', 'goal')),
+    owner_id   TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+  CREATE UNIQUE INDEX attachments_owner_media ON attachments (user_id, owner_type, owner_id, media_id) WHERE deleted_at IS NULL;
+  CREATE INDEX attachments_owner ON attachments (user_id, owner_type, owner_id);
+  CREATE INDEX attachments_media ON attachments (media_id) WHERE deleted_at IS NULL;
+  CREATE VIEW active_attachments AS SELECT rowid AS rowid, * FROM attachments WHERE deleted_at IS NULL;
+  `,
 ];
