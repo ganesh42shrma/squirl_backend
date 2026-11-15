@@ -507,11 +507,20 @@ async function reviewFixes() {
   assert.deepEqual([r.type, r.data.date, r.data.description], ['transaction', '2026-11-14', 'Sun lotion']);
   assert.equal(one('sun lotion 300').data.date, TODAY, 'still just a word when nothing marks it as a day');
 
-  // 7. A month-day that just went by, on a payment, is that day (not next year's); tasks still look ahead.
+  // 7. Recent payment dates and explicit past-tense payments stay in the past; tasks still look ahead.
   r = one('paid 500 on 3 nov');
   assert.deepEqual([r.type, r.data.date, r.data.amount], ['transaction', '2026-11-03', 500]);
   assert.equal(one('uber 230 on 25 oct').data.date, '2026-10-25');
-  assert.equal(one('paid 500 on 3 mar').type, 'task', 'months ago is still read as upcoming');
+  r = one('paid 500 on 3 mar');
+  assert.deepEqual([r.type, r.data.date, r.data.amount, r.data.direction], ['transaction', '2026-03-03', 500, 'debit'], 'an explicit past-tense payment keeps its historical date');
+  r = one('received 500 on 3 mar');
+  assert.deepEqual([r.type, r.data.date, r.data.direction], ['transaction', '2026-03-03', 'credit'], 'a past receipt also keeps its historical date');
+  for (const text of ['500 on 3 mar', 'pay 500 on 3 mar', 'remind me to pay 500 on 3 mar']) {
+    r = one(text);
+    assert.deepEqual([r.type, r.data.dueDate], ['task', '2027-03-03'], `${text} keeps the future reading`);
+  }
+  r = parser.parse('paid 500 on 3 dec', { ...ctx, today: '2027-01-15' }).actions[0];
+  assert.deepEqual([r.type, r.data.date], ['transaction', '2026-12-03'], 'a completed payment can belong to the previous year');
   assert.equal(one('submit report 3 nov').data.dueDate, '2027-11-03', 'a task keeps the future reading');
   assert.equal(one('pay rent 15000 on 1st').type, 'task');
   assert.equal(one('gym done 3 nov').type, 'note', 'a past check-in outside the grace window is a note');
