@@ -126,13 +126,14 @@ async function localStatus() {
  * One answer shaped by a JSON schema, for features that fill in a form (goal setup). Cloud
  * engines can search the web first and, with "strict" on, are constrained to the schema; the
  * local model gets JSON mode and never searches (it's offline). Returns the parsed object plus
- * the sources it read; the caller still validates every field.
+ * the sources it read; the caller still validates every field. `webSearch: false` turns searching
+ * off for a call that never needs it (Quick Capture).
  */
-async function structured(userId, { system, prompt, schema, name, reasoning = 'low' }) {
+async function structured(userId, { system, prompt, schema, name, reasoning = 'low', webSearch }) {
   if (userId) await guard.assertSafe(userId, [{ role: 'user', content: prompt }]);
   const engine = userId ? activeEngine(userId) : { mode: 'local' };
   if (engine.mode === 'api') {
-    const r = await PROVIDERS[engine.provider].structured(engine, { system, prompt, schema, name, webSearch: engine.webSearch, strict: engine.strict, reasoning });
+    const r = await PROVIDERS[engine.provider].structured(engine, { system, prompt, schema, name, webSearch: webSearch ?? engine.webSearch, strict: engine.strict, reasoning });
     const data = r.data ?? parseJson(r.text);
     if (!data) throw new AppError('The model gave an answer that couldn’t be read', 502, 'LLM_BAD_RESPONSE');
     return { data, sources: r.sources || [], searched: Boolean(r.searched), strict: Boolean(r.strict), searchUnavailable: r.searchUnavailable || null, model: r.model, provider: engine.provider };

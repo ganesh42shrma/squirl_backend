@@ -17,6 +17,8 @@ const preferences = z.object({
   habits: z.boolean().default(true),
   bills: z.boolean().default(true),
   smsPayments: z.boolean().default(true),
+  captures: z.boolean().default(true),
+  details: z.boolean().default(true),
   dailyTime: time.default('09:00'),
   habitTime: time.default('20:00'),
 });
@@ -26,6 +28,7 @@ const subscribe = z.object({ body: z.object({
   preferences,
 }) });
 const byEndpoint = z.object({ body: z.object({ endpoint }) });
+const test = z.object({ body: z.object({ endpoint, kind: z.enum(['test', 'sms_payment']).default('test') }) });
 const payment = z.object({ params: idParams });
 const paymentReply = z.object({ params: idParams, body: z.object({ note: z.string().trim().min(1).max(500) }).strict() });
-module.exports = { device, subscribe, byEndpoint, payment, paymentReply };
+module.exports = { device, subscribe, byEndpoint, test, payment, paymentReply };

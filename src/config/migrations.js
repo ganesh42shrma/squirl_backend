@@ -723,4 +723,40 @@ module.exports = [
   );
   CREATE INDEX payment_prompts_user ON payment_prompts(user_id, created_at);
   `,
+  // v22: Quick Capture log. 'done' rows remember what they created (for undo); 'inbox' rows are
+  // notes waiting to be sorted, which the daily reminder counts.
+  `
+  CREATE TABLE captures (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    text        TEXT NOT NULL,
+    status      TEXT NOT NULL CHECK (status IN ('done', 'inbox', 'dismissed', 'undone')),
+    engine      TEXT NOT NULL DEFAULT 'rules' CHECK (engine IN ('rules', 'ai')),
+    result      TEXT,                                            -- JSON [{ type, id, label, ... }] of what was created
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    resolved_at TEXT,
+    deleted_at  TEXT
+  );
+  CREATE INDEX captures_user_status ON captures (user_id, status, created_at) WHERE deleted_at IS NULL;
+  `,
+  // v23: Quick Capture ↔ SMS de-duplication. `transactions.capture_id` marks a row Quick Capture created
+  // (set only by the server, never by the ledger API), so a bank SMS can merge into it without ever
+  // touching hand-typed rows. `captures.client_id` is the palette's per-submission key: a retried save
+  // finds its first result instead of saving twice. Archived rows keep their key, so it stays unique.
+  `
+  ALTER TABLE transactions ADD COLUMN capture_id TEXT;
+  CREATE INDEX transactions_capture ON transactions (user_id, capture_id) WHERE capture_id IS NOT NULL;
+  ALTER TABLE captures ADD COLUMN client_id TEXT;
+  CREATE UNIQUE INDEX captures_client ON captures (user_id, client_id) WHERE client_id IS NOT NULL;
+  `,
+  // v24: two small guards for the v23 columns. `captures.request_hash` fingerprints what a save was for, so a
+  // client id re-used with different text is refused instead of silently returning the old save.
+  // `transactions.description_kept` marks a row whose description is the person's own words (an SMS merged
+  // into their Quick Capture row), as distinct from a bank row they merely annotated: a later statement
+  // import (and its undo) keeps the first kind and uses the bank's wording for the second.
+  `
+  ALTER TABLE captures ADD COLUMN request_hash TEXT;
+  ALTER TABLE transactions ADD COLUMN description_kept INTEGER NOT NULL DEFAULT 0;
+  `,
 ];

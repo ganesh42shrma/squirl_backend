@@ -40,7 +40,7 @@ uninstalling clears pairing and all unsent alerts. A personal debug build is not
 ## Pair once the app is installed
 
 1. Keep Tailscale connected on both phone and Linux. Open Squirl at its private `https://…ts.net` URL.
-2. In **Profile → Bank SMS**, save the correct SBI / Kotak account endings and exact sender IDs.
+2. In **Settings → Bank SMS**, save the correct SBI / Kotak account endings and sender headers (`SBIUPI`, `KOTAKB`).
    One account per bank is supported. The sender presets are editable; no account ending is prefilled.
 3. Create a device such as **Pixel SMS helper**, then copy the one-time **pairing code**. Use the full
    pairing code, not just the token. Do not share it or place it in a URL.
@@ -60,7 +60,7 @@ contacts, accessibility, or notification access. See the [Android permission ref
 
 ## Delivery and privacy behavior
 
-- Only exact configured senders and account endings pass the on-phone filter. OTP, one-time-password,
+- Only configured sender headers and account endings pass the on-phone filter. OTP, one-time-password,
   verification-code, and UPI-PIN messages are excluded. Unrecognized text from a matching bank/account
   is sent for server review; it does not automatically become a ledger payment.
 - The backend supports the supplied SBI UPI debit and Kotak UPI debit/credit formats. SBI credits
@@ -86,7 +86,9 @@ contacts, accessibility, or notification access. See the [Android permission ref
   stops. Desktop/server uptime, mounted database drive, and Tailscale connectivity are still required.
 - This version does not recover alerts received while capture was paused, the app was force-stopped,
   or the device was still locked after reboot. Compare against bank statements for completeness.
-  Updating sender/account settings requires a fresh pairing code; revoke the old device first.
+  Senders match on the DLT header, so `JM-KOTAKB-S`, `AX-KOTAKB-S` and any new two-letter operator
+  prefix or one-letter suffix all match `KOTAKB` without re-pairing. A brand-new header, or a
+  changed account, still needs a fresh pairing code; revoke the old device first.
 
 ## Verification status
 

@@ -6,6 +6,49 @@ A lightweight personal finance tracker API. You log expenses and income like row
 
 ## Getting started
 
+For automatic home deployments after local testing, see [private release deployment](deployment/AUTO_DEPLOY.md).
+`npm run release:plan` previews the committed backend/frontend pair; `npm run release:publish` tests
+and publishes it after the Linux controller has been installed once with `npm run deploy:install`.
+
+For a separate Mac test setup with fictional data and no USB/home database, run:
+
+```bash
+npm run dev:local
+```
+
+This creates an encrypted test database and independent keys in ignored `.local/`, seeds the demo
+once, builds the frontend preview, and starts a dedicated Redis on loopback port 6381, the backend
+on port 4000 with file watching, and Vite on port 5173. Redis must be installed (`brew install redis`)
+and both repositories' dependencies must already be installed. Ctrl+C stops these local services.
+Your normal `.env`, USB key, home DB, and Redis on port 6379 remain separate.
+
+- Live UI: **http://localhost:5173**, with frontend hot reload.
+- Built PWA preview: **http://localhost:4000**, for service-worker/notification checks. The initial
+  launch rebuilds it. After further frontend edits, run the command below from the backend folder,
+  then use Profile → Update app:
+
+  ```bash
+  VITE_API_URL= VITE_API_PROXY=http://127.0.0.1:4000 NODE_ENV=production npm --prefix ../squirl_frontend run build
+  ```
+
+- Demo login: **local@squirl.test**. Its password is generated per machine, stored in the ignored
+  `.local/development.env`, and printed by `npm run dev:local` at startup. Test-only account.
+- `npm run dev:payment` adds one fictional SMS-style ledger payment and purpose prompt to the local
+  demo account. Enable notifications in the built preview first; its worker picks the new payment
+  up within a minute. It exercises ledger/push/note behavior, rather than reading a phone's SMS.
+
+Local edits persist across restarts; the seed does not overwrite an existing account or reseed a
+financial reset. Redis sessions are temporary, so sign in again after restarting the local stack.
+Never copy `.local/` into your home setup or Git. When ready, commit the reviewed changes and
+use `npm run release:publish` after the one-time [Linux setup](deployment/AUTO_DEPLOY.md).
+Manual updates still work before auto-deploy is installed: pull on Linux, build the frontend,
+and restart the existing home service.
+AI and statement parsing still need their optional model/parser services; opening the app and
+editing demo data need neither. Run `npm run test:local-dev` for isolation and seeding checks.
+
+The normal startup described below continues using the regular `.env`. The local launcher selects
+its own file using `DOTENV_CONFIG_PATH`; it refuses a local config pointing outside its own DB path.
+
 The example below uses macOS. On **Linux**, skip both `db:key` commands: an existing USB database
 needs its **original key**, not a new one. On the Mac, run `npm run db:key -- --show` from
 `squirl_backend` and transfer that key privately through your password manager. On Linux, add it as

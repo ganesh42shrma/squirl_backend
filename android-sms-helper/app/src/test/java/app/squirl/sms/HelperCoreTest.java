@@ -50,6 +50,17 @@ public class HelperCoreTest {
         assertTrue(BankFilter.accepts(config, "JM-KOTAKB-S", CREDIT));
         assertTrue(BankFilter.accepts(config, "JX-KOTAKB-S", "Sent Rs.1.00 from Kotak Bank A/c X2222 to TEST USER on 15-11-26. UPI Ref 900000000002."));
     }
+    @Test public void unseenOperatorPrefixesMatchTheConfiguredHeader() throws Exception {
+        PairingConfig config = PairingConfig.parse(code().toString());
+        assertTrue(BankFilter.accepts(config, "AX-KOTAKB-S", CREDIT));
+        assertTrue(BankFilter.accepts(config, "ak-kotakb-s", CREDIT));
+        assertTrue(BankFilter.accepts(config, "QZ-SBIUPI-S", DEBIT));
+        assertTrue(BankFilter.accepts(config, "VM-SBIUPI", DEBIT));
+        assertFalse(BankFilter.accepts(config, "AX-KOTAKBX-S", CREDIT));
+        assertFalse(BankFilter.accepts(config, "AX-KOTAKB-S", DEBIT));
+        assertEquals("KOTAKB", BankFilter.header("JM-KOTAKB-S"));
+        assertEquals("KOTAKB", BankFilter.header("KOTAKB"));
+    }
     @Test public void excludesOtpUnknownSenderAndDifferentAccounts() throws Exception {
         PairingConfig config = PairingConfig.parse(code().toString());
         assertFalse(BankFilter.accepts(config, "VK-SBIUPI-S", DEBIT + " OTP 123456"));

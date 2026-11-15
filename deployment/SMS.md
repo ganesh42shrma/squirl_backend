@@ -3,7 +3,7 @@
 The backend can capture new SBI UPI debit alerts and the supplied Kotak UPI debit/credit formats.
 It does not read a phone's inbox. An Android receiver/automation client must obtain Android's SMS
 permission, filter bank messages on the phone, queue events locally, and submit them over the existing
-private Tailscale HTTPS address. The frontend provides Profile → Bank SMS pairing/review, and the
+private Tailscale HTTPS address. The frontend provides Settings → Bank SMS pairing/review, and the
 [Android SMS companion](../android-sms-helper/README.md) provides the receiver and encrypted queue.
 The companion still needs its full SDK build and physical-phone checks on Linux.
 
@@ -33,8 +33,9 @@ Responses use Squirl's normal `{ success, data, meta? }` envelope and `Cache-Con
 ```
 
 The examples are fictional. Replace suffixes and sender IDs with the real values shown by the
-phone's message details. Sender matching is exact after trim/uppercase, including telecom prefixes
-and suffixes; list all variants actually used. Never infer the sender from a bank name in the body.
+phone's message details. Senders match on the DLT header after trim/uppercase: an optional
+two-letter operator/circle prefix and one-letter type suffix are ignored, so `KOTAKB` (or
+`JM-KOTAKB-S`) also accepts `AX-KOTAKB-S`. List each distinct header the bank uses. Never infer the sender from a bank name in the body.
 This operation upserts the supplied banks; omitted banks remain configured. `GET /api/sms/accounts`
 returns the current mappings. Sender lists can be changed; an existing bank's account suffix cannot.
 
@@ -179,7 +180,7 @@ session/password checks, per-device delivery receipts, retry backoff, and expire
 It sends unanswered prompts from the last 24 hours, created after that push subscription was
 enabled, while their payment remains active and their financial generation is current. An existing
 note or an answered prompt suppresses further sends. New-payment delivery defaults on for already
-enabled push devices; **Profile → This device → New SMS payments** can disable it on one device.
+enabled push devices; **Settings → Notifications → New SMS payments** can disable it on one device.
 No historical prompts are created by this migration.
 
 The push contains only a kind, opaque prompt ID, and tag. Lock-screen text hides names, amounts,
@@ -202,6 +203,14 @@ Deploy both backend and frontend, rebuild the frontend with `npm run build`, the
 `systemctl --user restart squirl.service` on Linux to apply migration v21 and load the new code.
 Close all Squirl windows/tabs and reopen once to install the updated service worker; if the previous
 worker was still active on that visit, close and reopen once more. The Android SMS APK is unchanged.
+
+The Settings → Notifications **Update app** control can explicitly activate a waiting payment-aware
+worker and reload the current window. The status above it checks the active worker itself. A
+generic notification from an old worker cannot acquire a reply field retrospectively: use
+**Test payment reply** after updating to resend an existing unanswered prompt. The normal reminder
+test remains separate. `POST /api/notifications/test` accepts optional `kind: "sms_payment"` with
+the existing endpoint/session/CSRF requirements and three-per-minute rate limit. It sends the latest
+eligible unanswered prompt without creating a payment or changing delivery receipts.
 
 Run `npm run test:payment-prompts`, `npm run test:notifications`, and `npm run test:sms` in the backend;
 after building the frontend, run `npm run test:pwa`. Real Pixel inline replies, lock-screen behavior,

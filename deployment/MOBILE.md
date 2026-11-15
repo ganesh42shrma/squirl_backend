@@ -9,11 +9,14 @@ HTTPS address. The phone uses an installed PWA; no cloud database or public web 
 - Manifest, Android icons, a production service worker, and a reconnect screen.
 - Public interface files are cached. API responses, records, account details, and uploaded statements are not cached by the service worker. API responses also use `Cache-Control: no-store`.
 - `SERVE_FRONTEND=true` serves the frontend build and `/api` from one backend port.
-- Profile → This device provides enable/disable, a test notification, category switches, and reminder times.
+- Settings → Notifications provides enable/disable, a test notification, category switches, and reminder times.
 - Date-only/overdue tasks get a daily reminder; tasks with a due time also get a due reminder. Unfinished habits get a daily check-in reminder. Bills reuse the existing due-soon/missed-payment calculation, which depends on the statements you have imported.
 - Task/habit timing follows Tasks settings, including timezone and the configured day boundary. Bills use the calendar day in that timezone.
 - The worker checks every minute, persists successful delivery receipts, retries temporary failures with backoff, and removes expired subscriptions. Receipts are kept for 35 days. A crash between push acceptance and saving a receipt can repeat a message; stable notification tags reduce visible duplicates.
-- All device preferences and receipts stay in the encrypted SQLite database. Names, amounts, and record IDs are excluded from push payloads.
+- All device preferences and receipts stay in the encrypted SQLite database.
+- **Show amounts and names** (per device, on by default) adds a short `detail` to the payload: the first task title and count, up to three habit names, the first bill's name/amount/due day, or an SMS payment's amount, direction and merchant. Turn it off and only the kind and a tag are sent; the phone shows a generic line.
+- Notifications use the app icon, a white acorn status-bar badge (`/icons/squirl-badge.png`), themed titles, and the payment's own time. The service worker builds the text only from typed `detail` fields (flattened, length-capped, range-checked); any raw title/body/URL in a payload is ignored.
+- Android controls sound and pop-up behaviour per app (long-press a notification → settings). Install Squirl from Chrome so alerts appear as "Squirl", not Chrome.
 - Sign-out removes this session's subscriptions. Session expiry and password changes revoke delivery during the next worker scan. Sign in and enable notifications again if needed. Existing sessions last a week of inactivity; Redis must retain its session data across restarts to keep devices signed in.
 
 Offline financial viewing/editing and phone-to-desktop database synchronization are not implemented.
@@ -105,7 +108,8 @@ Sign in using the **HTTPS Tailscale address**, because production cookies requir
 
 Push messages travel encrypted through the browser vendor's push service (normally Google for
 Chrome on Android). The desktop makes an outbound HTTPS request; the push service doesn't need
-public access to Squirl. Only a generic reminder and a notification tag leave the desktop. Your
+public access to Squirl. The payload is end-to-end encrypted to this device; the push service can't
+read it. With details off, only a generic reminder and a tag leave the desktop. Your
 financial database is not uploaded. Tailscale must be connected to open Squirl and fetch details;
 delivery of an already-sent push uses the phone's ordinary internet connection.
 
@@ -138,7 +142,7 @@ and Mac model paths are not portable. Neither Ollama nor the parser is needed fo
 ## Tonight: 5. Test on Android
 
 1. Connect Tailscale and open the private HTTPS address in Chrome.
-2. Sign in. Open Profile → This device. If the worker is still preparing, reload once.
+2. Sign in. Open Settings → Notifications. If the worker is still preparing, reload once.
 3. Choose Install app / Add to Home screen in Chrome's menu.
 4. Enable notifications in Profile, choose reminder categories/times, and press Send test.
 5. Close Squirl and send another test from a window signed into that same device/session, or

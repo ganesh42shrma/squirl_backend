@@ -10,14 +10,16 @@ function record(db, userId, transactionId) {
 }
 
 function pending(db, subscription, now) {
-  return db.prepare(`SELECT p.id FROM payment_prompts p
+  const details = JSON.parse(subscription.preferences || '{}').details !== false;
+  return db.prepare(`SELECT p.id, p.created_at, t.description, t.amount_paise, t.type FROM payment_prompts p
     JOIN users u ON u.id = p.user_id AND u.financial_generation = p.generation
     JOIN active_transactions t ON t.id = p.transaction_id AND t.user_id = p.user_id
     WHERE p.user_id = ? AND p.answered_at IS NULL AND COALESCE(t.notes, '') = ''
       AND p.created_at >= ? AND p.created_at >= ? AND p.created_at <= ?
     ORDER BY p.created_at, p.id`).all(subscription.user_id, subscription.created_at,
       new Date(now.getTime() - 86400_000).toISOString(), now.toISOString())
-    .map(({ id }) => ({ key: `sms-payment:${id}`, kind: 'sms_payment', tag: `sms-payment-${id}`, promptId: id }));
+    .map((p) => ({ key: `sms-payment:${p.id}`, kind: 'sms_payment', tag: `sms-payment-${p.id}`, promptId: p.id,
+      ...(details && { detail: { amount: p.amount_paise / 100, type: p.type, party: p.description.slice(0, 60), at: p.created_at } }) }));
 }
 
 function promptFor(db, userId, id) {
