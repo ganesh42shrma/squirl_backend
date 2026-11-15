@@ -48,7 +48,8 @@ if (config.serveFrontend) {
   }));
   app.get(['/', '/app', '/app/*path', '/login', '/signup', '/forgot-password', '/reset-password'], (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.sendFile(path.join(frontend, 'index.html'));
+    // Resolve within the frontend root so hidden deployment parents such as ~/.local are allowed.
+    res.sendFile('index.html', { root: frontend });
   });
 }
 

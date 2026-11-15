@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const { once } = require('node:events');
 const { createECDH } = require('node:crypto');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
@@ -36,6 +37,39 @@ const { hashPassword } = require('../src/core/password');
 const { insertUser } = require('../src/plugins/users/user.model');
 const app = require('../src/app');
 let server;
+
+async function hiddenReleasePaths() {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'squirl-private-serving-'));
+  const release = path.join(temporary, '.local/share/squirl-deploy/releases/synthetic');
+  const frontend = path.join(release, 'squirl_frontend/dist');
+  const html = '<!doctype html><html><body>Synthetic private release</body></html>';
+  let hiddenServer;
+  try {
+    fs.mkdirSync(frontend, { recursive: true });
+    fs.writeFileSync(path.join(frontend, 'index.html'), html);
+    fs.writeFileSync(path.join(frontend, '.private-fixture'), 'must never be served');
+    const appFile = path.resolve(__dirname, '../src/app.js');
+    const appModule = { exports: {} };
+    vm.runInNewContext(fs.readFileSync(appFile, 'utf8'), {
+      __dirname: path.join(release, 'squirl_backend/src'),
+      module: appModule,
+      require: createRequire(appFile),
+    });
+    hiddenServer = appModule.exports.listen(0, '127.0.0.1');
+    await once(hiddenServer, 'listening');
+    const base = `http://127.0.0.1:${hiddenServer.address().port}`;
+    for (const route of ['/', '/app/tasks/today', '/app/finance/ledger', '/login']) {
+      const response = await fetch(`${base}${route}`);
+      assert.equal(response.status, 200, `${route} must work beneath a hidden deployment directory`);
+      assert.equal(response.headers.get('cache-control'), 'no-store');
+      assert.equal(await response.text(), html);
+    }
+    assert.equal((await fetch(`${base}/.private-fixture`)).status, 404, 'files inside the frontend still obey the dotfile guard');
+  } finally {
+    if (hiddenServer) { hiddenServer.closeAllConnections(); await new Promise((resolve) => hiddenServer.close(resolve)); }
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+}
 
 async function main() {
   // A missing mounted database must fail before creating folders or even reading a DB key.
@@ -96,6 +130,7 @@ async function main() {
     res = await call(path); assert.equal(res.status, 200); assert(res.headers.get('content-type').includes(type));
     assert.equal(res.headers.get('cache-control'), 'no-cache');
   }
+  await hiddenReleasePaths();
   const headers = { 'Content-Type': 'application/json', 'X-Requested-With': 'squirl', 'X-Forwarded-Proto': 'https' };
   res = await call('/api/notifications/status', { method: 'POST', headers, body: '{}' });
   assert.equal(res.status, 401);
@@ -122,7 +157,7 @@ async function main() {
   assert.equal(db.prepare('SELECT count(*) AS n FROM push_subscriptions').get().n, 0, 'logout revokes this session’s push device');
   res = await call('/api/notifications/status', { method: 'POST', headers, body: '{}' });
   assert.equal(res.status, 401);
-  console.log('Passed: missing-drive protection, private key setup, SPA deep links, manifest/icons/worker headers, private API guard, CSRF, secure proxy login cookies, subscription route, API 404s, and logout revocation.');
+  console.log('Passed: missing-drive protection, private key setup, SPA deep links including hidden release directories, dotfile protection, manifest/icons/worker headers, private API guard, CSRF, secure proxy login cookies, subscription route, API 404s, and logout revocation.');
 }
 main().catch((err) => { console.error(err); process.exitCode = 1; }).finally(async () => {
   if (server) { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
