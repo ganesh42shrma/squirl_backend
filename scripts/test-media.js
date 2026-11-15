@@ -334,8 +334,19 @@ function configChecks() {
   fs.symlinkSync(dbDir, link);
   assert.equal(attempt({ ...base, dir: path.join(link, 'photos') }).rt.configured, false, 'a symlink into the database folder is still refused');
   assert.equal(attempt({ ...base, dir: path.join(path.dirname(dbDir), 'squirl-media') }).rt.configured, true, 'a sibling folder is fine');
-  // Unwritable location.
-  assert.equal(attempt({ ...base, dir: '/proc/definitely/not/writable/media' }).rt.configured, false);
+  // Unwritable location: a folder "inside" a regular file can never be created, on any OS. (Not /proc: on Linux,
+  // mkdirSync({ recursive: true }) under /proc loops forever, which hung this test in the Linux deploy checks.)
+  const blocker = path.join(root, 'not-a-folder');
+  fs.writeFileSync(blocker, '');
+  r = attempt({ ...base, dir: path.join(blocker, 'media') });
+  assert.equal(r.rt.configured, false, 'a folder that cannot be created is refused');
+  assert.match(r.logs.filter(([l]) => l === 'warn').map(([, m]) => m).join(' '), /MEDIA_DIR cannot be used/);
+  // Kernel filesystems are refused before any mkdir, so this is safe to check on Linux too.
+  for (const dir of ['/proc/definitely/not/writable/media', '/sys/squirl-media', '/dev/squirl-media']) {
+    r = attempt({ ...base, dir });
+    assert.equal(r.rt.configured, false, `${dir} is refused`);
+    assert.match(r.logs.filter(([l]) => l === 'warn').map(([, m]) => m).join(' '), /not under \/proc, \/sys or \/dev/, `${dir} names the reason`);
+  }
   // S3 settings: all four needed, https (or loopback http for tests), plain address.
   const withS3 = (s3) => attempt({ ...base, dir: path.join(root, 'cfg-s3'), s3 });
   const good = { endpoint: 'https://acct.r2.example.invalid', bucket: 'b', accessKeyId: 'k', secretAccessKey: 's', region: 'auto', pathStyle: true };

@@ -69,6 +69,12 @@ function build(raw, dbPath, log = logger) {
     log.warn('Photo attachments are off: MEDIA_DIR is inside the database folder. Use a folder on the computer’s internal disk');
     return OFF;
   }
+  // Kernel filesystems can't hold files, and on Linux a recursive mkdir under /proc loops forever at 100% CPU
+  // (it reads "not found" as a missing parent and retries), so refuse them before touching the disk.
+  if (/^\/(?:proc|sys|dev)(?:\/|$)/.test(realish(raw.dir))) {
+    log.warn('Photo attachments are off: MEDIA_DIR must be a normal folder, not under /proc, /sys or /dev');
+    return OFF;
+  }
   try {
     fs.mkdirSync(raw.dir, { recursive: true, mode: 0o700 });
     fs.accessSync(raw.dir, fs.constants.R_OK | fs.constants.W_OK);
