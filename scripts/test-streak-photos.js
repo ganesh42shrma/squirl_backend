@@ -59,9 +59,9 @@ const snapshot = () => ({
 });
 const before = snapshot();
 
-// ── 1. The v29 upgrade changes no existing row and is the last migration ──
+// ── 1. The v29 upgrade changes no existing row ──
 assert.equal(typeof migrations[28], 'function');
-assert.equal(migrations.length, 29, 'v29 is the newest migration: v28 (already deployed) was not edited');
+assert.ok(migrations.length >= 29, 'v29 exists; later migrations may follow it');
 db.pragma('foreign_keys = OFF');
 db.transaction(() => migrations[28](db))();
 db.pragma('foreign_keys = ON');
@@ -71,6 +71,11 @@ assert.equal(db.prepare('SELECT require_photo FROM habits WHERE id = ?').pluck()
 assert.equal(db.prepare('SELECT count(*) FROM active_attachments WHERE day IS NULL').pluck().get(), 1);
 assert.equal(db.prepare('SELECT count(*) FROM active_habits').pluck().get(), 1);
 assert.throws(() => db.prepare('UPDATE habits SET require_photo = 2 WHERE id = ?').run(gym.id), /CHECK/);
+
+// The photo code knows every owner type the newest schema has, so the rest runs on the fully migrated database.
+db.pragma('foreign_keys = OFF');
+for (const m of migrations.slice(29)) typeof m === 'function' ? m(db) : db.exec(m);
+db.pragma('foreign_keys = ON');
 
 // ── 2. Photos on a habit's day ──
 const runtime = require('../src/plugins/media/media.runtime');

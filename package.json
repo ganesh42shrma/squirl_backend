@@ -21,6 +21,7 @@
     "test:family": "node scripts/test-family.js",
     "test:people": "node scripts/test-people.js",
     "test:streak-photos": "node scripts/test-streak-photos.js",
+    "test:profile": "node scripts/test-profile.js",
     "test:reset": "node scripts/test-reset.js",
     "test:dashboard": "node scripts/test-dashboard.js",
     "test:imports": "node scripts/test-imports.js",
