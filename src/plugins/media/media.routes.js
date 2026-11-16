@@ -27,6 +27,22 @@ router.post('/upload', async (req, res, next) => {
   sendSuccess(res, { attachment }, { status: created ? 201 : 200 });
 });
 
+// The profile picture: one per account, replaced on every upload. The file is shown through GET /:mediaId/file.
+router.post('/avatar', async (req, res, next) => {
+  try {
+    await rateLimit.hit(`media-avatar:${req.user.id}`, { limit: 10, windowSec: 60 });
+    next();
+  } catch (err) { next(err); }
+}, uploadImage, (req, res) => {
+  if (!req.file) throw AppError.badRequest('Choose a photo to upload', 'FILE_REQUIRED');
+  sendSuccess(res, { attachment: service.setAvatar(req.user.id, req.file.buffer) });
+});
+
+router.delete('/avatar', (req, res) => {
+  service.removeAvatar(req.user.id);
+  sendSuccess(res, null);
+});
+
 router.get('/attachments', validate(schemas.list), (req, res) => {
   sendSuccess(res, { attachments: service.listAttachments(req.user.id, req.query) });
 });

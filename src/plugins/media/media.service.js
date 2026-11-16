@@ -94,7 +94,8 @@ function upload(userId, { ownerType, ownerId, day, buffer }) {
     // One picture can't prove two days of the same habit.
     if (attached) throw AppError.conflict('You already used that photo for another day. Take a new one.', 'MEDIA_ALREADY_USED');
   }
-  if (ownerAttachmentCount(db, userId, ownerType, ownerId, day) >= rt.maxPerOwner) {
+  // A profile picture replaces the last one (see setAvatar), so the per-item limit doesn't apply to it.
+  if (ownerType !== 'user' && ownerAttachmentCount(db, userId, ownerType, ownerId, day) >= rt.maxPerOwner) {
     throw AppError.conflict(`You can attach up to ${rt.maxPerOwner} photos here. Remove one to add another.`, 'MEDIA_LIMIT_REACHED');
   }
 
@@ -129,6 +130,37 @@ function upload(userId, { ownerType, ownerId, day, buffer }) {
   }
   if (rt.s3) replica.nudge();
   return { attachment: toAttachment(db.prepare(`${ATTACHMENT_SELECT} WHERE a.id = ? AND a.user_id = ?`).get(attachmentId, userId)), created: true };
+}
+
+/** The media id of the account's current profile picture, or null. Safe to call when media isn't configured. */
+function avatarMediaId(userId) {
+  return getDb().prepare(`SELECT media_id FROM active_attachments WHERE user_id = ? AND owner_type = 'user' AND owner_id = ?
+    ORDER BY rowid DESC LIMIT 1`).pluck().get(userId, userId) ?? null;
+}
+
+/**
+ * Sets the profile picture. The new picture is stored first; only then is the old one detached, so a failed
+ * upload never leaves the account without its current picture.
+ */
+function setAvatar(userId, buffer) {
+  const { attachment } = upload(userId, { ownerType: 'user', ownerId: userId, buffer });
+  const db = getDb();
+  const released = db.transaction(() => {
+    const now = nowIso();
+    const old = db.prepare(`SELECT id, media_id FROM active_attachments WHERE user_id = ? AND owner_type = 'user' AND owner_id = ? AND id != ?`)
+      .all(userId, userId, attachment.id);
+    for (const row of old) db.prepare('UPDATE attachments SET deleted_at = ? WHERE id = ? AND user_id = ?').run(now, row.id, userId);
+    return releaseMedia(db, userId, old.map((r) => r.media_id).filter((id) => id !== attachment.mediaId), now);
+  })();
+  purgeFiles(released);
+  return attachment;
+}
+
+function removeAvatar(userId) {
+  requireConfigured();
+  const db = getDb();
+  const released = db.transaction(() => detachOwner(db, userId, 'user', userId))();
+  purgeFiles(released);
 }
 
 /**
@@ -301,6 +333,6 @@ function purgeUnreferenced({ now = Date.now(), maxAgeMs = ORPHAN_AGE_MS } = {}) 
 }
 
 module.exports = {
-  requireConfigured, status, listAttachments, upload, openFile, detach, detachOwnerTypes, detachOwner, moveAttachments, purgeFiles,
+  requireConfigured, status, listAttachments, upload, avatarMediaId, setAvatar, removeAvatar, openFile, detach, detachOwnerTypes, detachOwner, moveAttachments, purgeFiles,
   collectUserMedia, eraseFiles, purgeUnreferenced, releaseMedia,
 };

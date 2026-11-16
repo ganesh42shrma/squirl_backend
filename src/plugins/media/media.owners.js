@@ -7,6 +7,7 @@ const OWNER_VIEWS = Object.freeze({
   commitment: 'active_commitments',
   habit: 'active_habits',
   capture: 'inbox_captures',
+  user: 'avatar_owners', // the profile picture; owner_id is the account's own id
 });
 const OWNER_TYPES = Object.keys(OWNER_VIEWS);
 

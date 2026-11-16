@@ -42,9 +42,22 @@ const dashboardConfigV2 = z.object({
 });
 const dashboardConfig = z.union([dashboardConfigV1, dashboardConfigV2]);
 
+// Optional personal details. An empty string clears the field (stored as NULL).
+const optionalText = (max) => z.string().trim().max(max).transform((v) => v || null);
+const phone = z.string().trim().max(32)
+  .refine((v) => !v || normalizePhone(v), 'Enter a 10-digit Indian mobile number, optionally with +91')
+  .transform((v) => (v ? normalizePhone(v) : null));
+const birthday = z.string().trim()
+  .refine((v) => v === '' || (/^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(`${v}T00:00:00Z`))), 'Enter a valid date')
+  .refine((v) => v === '' || (v <= new Date().toISOString().slice(0, 10) && v >= '1900-01-01'), 'Enter a date in the past')
+  .transform((v) => v || null);
+const currency = z.string().trim().toUpperCase().refine((v) => v === '' || /^[A-Z]{3}$/.test(v), 'Use a 3-letter currency code, like INR').transform((v) => v || null);
+
 const updateProfile = z.object({
   body: z.object({
     name: name.optional(), email: email.optional(),
+    phone: phone.optional(), bio: optionalText(200).optional(), birthday: birthday.optional(),
+    city: optionalText(80).optional(), currency: currency.optional(),
     dashboardConfig: dashboardConfig.optional(),
   }).refine((b) => Object.keys(b).length > 0, 'Nothing to update'),
 });

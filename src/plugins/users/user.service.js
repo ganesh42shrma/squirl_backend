@@ -37,10 +37,15 @@ async function getProfile(userId) {
   if (!user) throw AppError.notFound('Account not found');
   const db = getDb();
   const count = (table) => db.prepare(`SELECT count(*) FROM active_${table} WHERE user_id = ?`).pluck().get(userId);
-  return { ...user, dashboardConfig: JSON.parse(findRow(userId).dashboard_config || 'null'), stats: { transactions: count('transactions'), imports: count('imports'), categories: count('categories') } };
+  const row = findRow(userId);
+  return {
+    ...user,
+    phone: row.phone, bio: row.bio, birthday: row.birthday, city: row.city, currency: row.currency,
+    avatarMediaId: media.avatarMediaId(userId),
+    dashboardConfig: JSON.parse(row.dashboard_config || 'null'), stats: { transactions: count('transactions'), imports: count('imports'), categories: count('categories') } };
 }
 
-async function updateProfile(userId, { name, email, dashboardConfig }) {
+async function updateProfile(userId, { name, email, dashboardConfig, ...details }) {
   if (email) {
     const other = findByEmail(email);
     if (other && other.id !== userId) throw AppError.conflict('An account with this email already exists', 'EMAIL_TAKEN');
@@ -48,6 +53,7 @@ async function updateProfile(userId, { name, email, dashboardConfig }) {
   const changes = { updated_at: nowIso() };
   if (name !== undefined) changes.name = name;
   if (email !== undefined) changes.email = email;
+  for (const key of ['phone', 'bio', 'birthday', 'city', 'currency']) if (details[key] !== undefined) changes[key] = details[key];
   if (dashboardConfig !== undefined) changes.dashboard_config = JSON.stringify(dashboardConfig);
   updateRow(getDb(), 'users', userId, changes);
   return getProfile(userId);

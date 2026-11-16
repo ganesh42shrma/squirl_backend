@@ -930,4 +930,38 @@ module.exports = [
     CREATE VIEW active_attachments AS SELECT rowid AS rowid, * FROM attachments WHERE deleted_at IS NULL;
     `);
   },
+  // v30: a richer profile. `users` gets optional personal details (all NULL until the person fills them in), and
+  // a profile picture is a photo attachment owned by the account itself (`owner_type = 'user'`, owner_id = the
+  // user's id), so it reuses the encrypted media store. `attachments` is rebuilt like in v29 (its CHECK must learn
+  // 'user'): same rows in the same order, same ids, indexes and view. `avatar_owners` is the "live owner" view for
+  // it: an account is its own owner, so `user_id` is just its id.
+  `
+  ALTER TABLE users ADD COLUMN phone TEXT;
+  ALTER TABLE users ADD COLUMN bio TEXT;
+  ALTER TABLE users ADD COLUMN birthday TEXT;
+  ALTER TABLE users ADD COLUMN city TEXT;
+  ALTER TABLE users ADD COLUMN currency TEXT;
+
+  DROP VIEW active_attachments;
+  CREATE TABLE attachments_v30 (
+    id         TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    media_id   TEXT NOT NULL REFERENCES media(id),
+    owner_type TEXT NOT NULL CHECK (owner_type IN ('transaction', 'task', 'goal', 'commitment', 'capture', 'habit', 'user')),
+    owner_id   TEXT NOT NULL,
+    day        TEXT,
+    created_at TEXT NOT NULL,
+    deleted_at TEXT
+  );
+  INSERT INTO attachments_v30 (rowid, id, user_id, media_id, owner_type, owner_id, day, created_at, deleted_at)
+    SELECT rowid, id, user_id, media_id, owner_type, owner_id, day, created_at, deleted_at FROM attachments ORDER BY rowid;
+  DROP TABLE attachments;
+  ALTER TABLE attachments_v30 RENAME TO attachments;
+  CREATE UNIQUE INDEX attachments_owner_media ON attachments (user_id, owner_type, owner_id, media_id) WHERE deleted_at IS NULL;
+  CREATE INDEX attachments_owner ON attachments (user_id, owner_type, owner_id);
+  CREATE INDEX attachments_owner_day ON attachments (user_id, owner_type, owner_id, day) WHERE deleted_at IS NULL;
+  CREATE INDEX attachments_media ON attachments (media_id) WHERE deleted_at IS NULL;
+  CREATE VIEW active_attachments AS SELECT rowid AS rowid, * FROM attachments WHERE deleted_at IS NULL;
+  CREATE VIEW avatar_owners AS SELECT rowid AS rowid, id, id AS user_id FROM users;
+  `,
 ];

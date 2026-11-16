@@ -3,7 +3,8 @@ const { entityId } = require('../../core/schemas');
 
 const { OWNER_TYPES } = require('./media.owners');
 
-const ownerType = z.enum(OWNER_TYPES);
+// The profile picture ('user') has its own routes: it is one picture that replaces the last, not a list.
+const ownerType = z.enum(OWNER_TYPES.filter((t) => t !== 'user'));
 
 // Multipart fields arrive as plain strings; the file itself is checked by its bytes in the service.
 // A habit's photos belong to one day (YYYY-MM-DD); nothing else takes a day.
