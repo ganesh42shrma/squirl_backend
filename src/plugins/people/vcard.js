@@ -38,20 +38,30 @@ function splitOutsideQuotes(text, sep, { honourEscapes = false } = {}) {
 }
 
 // Physical lines → logical lines: RFC folding (a line starting with space/tab continues the one before) and the
-// 2.1 QUOTED-PRINTABLE soft break (a QP line ending in "=" continues on the next line).
+// 2.1 QUOTED-PRINTABLE soft break (a QP line ending in "=" continues on the next line). The pieces of a line are
+// collected and joined once: a photo is thousands of folded lines, and re-reading the growing line for each one
+// would take time that grows with the square of the file (a crafted 20 MB file could stall the server for hours).
 function logicalLines(text) {
   const out = [];
-  let current = null;
+  let pieces = null;
+  let qp = false; // decided from the first physical line, which always carries the parameters
+  let soft = false; // the previous piece ended in a QP soft break
   const isQp = (line) => /^[^:]*;(?:ENCODING=)?(?:QUOTED-PRINTABLE|Q)(?:;|:)/i.test(line);
+  const add = (piece) => {
+    soft = qp && piece.endsWith('=');
+    pieces.push(soft ? piece.slice(0, -1) : piece);
+  };
   for (const line of text.split(/\r\n|\n|\r/)) {
-    if (current !== null && isQp(current) && current.endsWith('=')) current = current.slice(0, -1) + line;
-    else if (current !== null && /^[ \t]/.test(line)) current += line.slice(1);
+    if (pieces && soft) add(line);
+    else if (pieces && /^[ \t]/.test(line)) add(line.slice(1));
     else {
-      if (current !== null) out.push(current);
-      current = line;
+      if (pieces) out.push(pieces.join(''));
+      pieces = [];
+      qp = isQp(line);
+      add(line);
     }
   }
-  if (current !== null) out.push(current);
+  if (pieces) out.push(pieces.join(''));
   return out;
 }
 
@@ -85,12 +95,18 @@ function parseLine(line) {
 }
 
 function decodeQuotedPrintable(text, charset) {
-  const bytes = [];
+  const chunks = [];
+  let plain = 0; // start of the run of literal text not yet copied (kept whole, so an emoji's two halves stay together)
   for (let i = 0; i < text.length; i += 1) {
-    if (text[i] === '=' && /^[0-9A-Fa-f]{2}$/.test(text.slice(i + 1, i + 3))) { bytes.push(parseInt(text.slice(i + 1, i + 3), 16)); i += 2; }
-    else bytes.push(...Buffer.from(text[i], 'utf8'));
+    if (text[i] !== '=' || !/^[0-9A-Fa-f]{2}$/.test(text.slice(i + 1, i + 3))) continue;
+    if (i > plain) chunks.push(Buffer.from(text.slice(plain, i), 'utf8'));
+    chunks.push(Buffer.from([parseInt(text.slice(i + 1, i + 3), 16)]));
+    i += 2;
+    plain = i + 1;
   }
-  try { return new TextDecoder(charset || 'utf-8').decode(Uint8Array.from(bytes)); } catch { return Buffer.from(bytes).toString('utf8'); }
+  if (plain < text.length) chunks.push(Buffer.from(text.slice(plain), 'utf8'));
+  const bytes = Buffer.concat(chunks);
+  try { return new TextDecoder(charset || 'utf-8').decode(bytes); } catch { return bytes.toString('utf8'); }
 }
 
 // vCard text escapes: \n → space (a name never needs a line break), \, \; \\ → the character.

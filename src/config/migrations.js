@@ -837,8 +837,8 @@ module.exports = [
   // linked to someone by hand: they only label ledger rows and never touch a category. Each old
   // `users.family_contacts` entry becomes a family person with the same name, aliases, relationship and
   // normalised phone, so the Family rules see exactly the names and numbers they saw before. The old column is
-  // left untouched and is no longer read or written: it stays a snapshot an older build can still read if a
-  // deploy is rolled back.
+  // left untouched and is no longer read or written: dropping it would gain nothing, and it stays as a record of
+  // the list as it was. (An older build cannot open a v28 database at all; a rollback restores the deploy's backup.)
   (conn) => {
     conn.exec(`
     CREATE TABLE people (
@@ -889,8 +889,9 @@ module.exports = [
       let contacts = [];
       try { contacts = JSON.parse(user.family_contacts || '[]'); } catch { /* unreadable list: nothing to carry over */ }
       for (const c of Array.isArray(contacts) ? contacts : []) {
+        if (!c || typeof c !== 'object') continue; // a stray null or string in the list must not stop the upgrade
         const id = newId();
-        const aliases = Array.isArray(c.aliases) ? c.aliases.map(String) : [];
+        const aliases = Array.isArray(c.aliases) ? c.aliases.map((a) => String(a ?? '')) : [];
         addPerson.run(id, user.id, String(c.name ?? ''), String(c.relationship || ''), JSON.stringify(aliases), now, now);
         const phone = normalizePhone(c.phone);
         if (phone) addPhone.run(id, user.id, phone, now);

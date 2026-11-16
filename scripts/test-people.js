@@ -92,6 +92,9 @@ const LEGACY_LIST = [
 ];
 db.prepare('UPDATE users SET family_contacts = ? WHERE id = ?').run(JSON.stringify(LEGACY_LIST), legacy);
 db.prepare('UPDATE users SET family_contacts = ? WHERE id = ?').run('{not json', corrupt);
+// A list with stray entries (a null, a bare string, a number where text belongs) must not stop the upgrade.
+const messy = mkUser('Messy');
+db.prepare('UPDATE users SET family_contacts = ? WHERE id = ?').run(JSON.stringify([null, 'just text', 7, { name: 'Kept One', aliases: 'not a list', phone: 9000000099 }, { name: 'Kept Two' }]), messy);
 
 const DESCRIPTIONS = [
   upi('ANANYA SHARMA'), upi('Ananya.Sharma'), upi('ANANYA S'), upi('A SHARMA'), upi('ANANYA'), upi('ANANYA SHARMA STORE'),
@@ -105,6 +108,9 @@ const DESCRIPTIONS = [
   'UPI/9000000001@ybl/SBIN/123456789012/Payment from', 'UPI/9000000002@ybl/SBIN/123456789012/Payment from',
   'NEFT*SBIN0000001*AXN12345678*ANANYA SHARMA', 'NEFT*SBIN0000001*9000000001*DIFFERENT NAME', 'IMPS/P2A/123456/RAMESH K/SBIN',
   'SMS ALERT CHG FOR THE MONTH OF JUL26', 'UPI', 'ATM WDL 5000', upi('Swiggy', 'swiggy@icici'), upi('रमेश कुमार'),
+  // Payments to people who are imported later as ordinary (non-family) contacts: by number and by name.
+  'WDL TFR UPI/DR/123456789012/BANK DISPLAY NAME/SBIN/9100000042@ybl/Sent', 'UPI/9100000007@ybl/SBIN/123456789012/Payment from',
+  upi('CONTACT 042'), kotak('CONTACT 007'),
 ];
 
 migrations[27](db); // v28 (the real migration, on a populated v27 schema)
@@ -134,6 +140,7 @@ async function main() {
   assert.deepEqual(by('Bad Phone').phones, []);
   assert.equal((await people.listPeople(noList, {})).meta.total, 0);
   assert.equal((await people.listPeople(corrupt, {})).meta.total, 0, 'an unreadable old list is skipped, not fatal');
+  assert.deepEqual((await people.listPeople(messy, {})).items.map((p) => [p.name, p.isFamily, p.aliases, p.phones]), [['Kept One', true, [], ['9000000099']], ['Kept Two', true, [], []]], 'stray entries are passed over; real ones still migrate');
   assert.equal(JSON.parse(db.prepare('SELECT family_contacts FROM users WHERE id = ?').pluck().get(legacy)).length, LEGACY_LIST.length, 'the old column is left as it was');
   assert.equal(db.prepare('SELECT count(*) FROM family_sync_jobs').pluck().get(), 0, 'the migration queues no re-sort: nothing about Family changed');
 
@@ -176,6 +183,18 @@ async function main() {
   assert.deepEqual(sweep(familyPolicy(db, legacy), legacy), sweepBefore, 'policy answers unchanged');
   assert.deepEqual(sweep(familyPolicy(db, legacy), legacy), before, '...and still identical to the old list');
   assert.equal(familyPolicy(db, legacy).matches(upi('UNRELATED PERSON', 'stranger@okaxis')), false, 'a linked id never makes a payment Family');
+  // An imported contact's number or name inside a payment is a label, never Family.
+  for (const d of ['WDL TFR UPI/DR/123456789012/BANK DISPLAY NAME/SBIN/9100000042@ybl/Sent', 'UPI/9100000007@ybl/SBIN/123456789012/Payment from', upi('CONTACT 042')]) {
+    assert.equal(familyPolicy(db, legacy).matches(d), false, `not family: ${d}`);
+    assert.equal(rules.categoryFor(db, legacy, { description: d, type: 'debit' }), null);
+  }
+  assert.equal((await transactions.listTransactions(legacy, { page: 1, limit: 5, sort: '-date', search: '9100000042@ybl' })).items[0].person.name, 'Contact 042', '...though it does label the payment');
+  // A damaged aliases cell must not take categorisation down with it.
+  const brokenUser = mkUser('Broken aliases');
+  const brokenPerson = await people.createPerson(brokenUser, { name: 'Still Family', phones: [], relationship: '', aliases: ['Alt Name'], isFamily: true });
+  db.prepare('UPDATE people SET aliases = ? WHERE id = ?').run('{oops', brokenPerson._id);
+  assert.equal(familyPolicy(db, brokenUser).matches(upi('STILL FAMILY')), true);
+  assert.equal(familyPolicy(db, brokenUser).matches(upi('ALT NAME')), false);
   assert.equal(rules.categoryFor(db, legacy, { description: upi('UNRELATED PERSON', 'stranger@okaxis'), type: 'debit' }), null);
   familyWorker.enqueue(db, legacy); drain(legacy);
   assert.deepEqual(snapshot(), categoriesBefore, 'a full re-sort afterwards moves nothing');
@@ -226,6 +245,18 @@ async function main() {
   assert.throws(() => parseVcf('hello world'), { code: 'NOT_A_VCARD' });
   assert.throws(() => parseVcf('BEGIN:VCARD\nFN:A\nTEL:9000000016\nEND:VCARD\nBEGIN:VCARD\nFN:B\nTEL:9000000017\nEND:VCARD', { maxCards: 1 }), { code: 'TOO_MANY_CONTACTS' });
   assert.equal(parseVcf('BEGIN:VCARD\nFN:A\nEND:VCARD\nBEGIN:VCARD\nFN:B\nEND:VCARD', { maxCards: 2 }).length, 2);
+  // QUOTED-PRINTABLE with an emoji left unencoded (its two UTF-16 halves must stay together), and a QP value
+  // that is both soft-broken and folded.
+  assert.deepEqual(parseVcf(`BEGIN:VCARD\nVERSION:2.1\nFN;CHARSET=UTF-8;ENCODING=QUOTED-PRINTABLE:Asha 🌸 ${qp('दीदी')}\nTEL;CELL:9000000018\nEND:VCARD`), [{ name: 'Asha 🌸 दीदी', phones: ['9000000018'] }]);
+  assert.deepEqual(parseVcf('BEGIN:VCARD\nVERSION:2.1\nFN;ENCODING=QUOTED-PRINTABLE:Soft=\nBroken=20=\nName\n  Folded\nTEL;CELL:9000000019\nEND:VCARD'), [{ name: 'SoftBroken Name Folded', phones: ['9000000019'] }]);
+  assert.deepEqual(parseVcf('BEGIN:VCARD\nFN:Ends With =\nTEL:9000000020\nEND:VCARD'), [{ name: 'Ends With =', phones: ['9000000020'] }], 'a trailing = only continues a QUOTED-PRINTABLE line');
+  // Hostile shapes finish quickly: one value folded 300,000 times (a file of photos looks like this), a soft-break
+  // chain of the same length, and megabytes of quotes and separators. Reading each must stay linear in the file.
+  const started = Date.now();
+  assert.deepEqual(parseVcf(`BEGIN:VCARD\r\nX${'\r\n a'.repeat(300_000)}\r\nFN:After Fold\r\nTEL:9000000021\r\nEND:VCARD`), [{ name: 'After Fold', phones: ['9000000021'] }]);
+  assert.deepEqual(parseVcf(`BEGIN:VCARD\r\nNOTE;ENCODING=QUOTED-PRINTABLE:${'a=\r\n'.repeat(300_000)}\r\nFN:After Chain\r\nTEL:9000000022\r\nEND:VCARD`), [{ name: 'After Chain', phones: ['9000000022'] }]);
+  assert.equal(parseVcf(`BEGIN:VCARD\r\nFN:${'"'.repeat(2_000_000)}\r\nN:${';'.repeat(1_000_000)}\r\nTEL:9000000023\r\nEND:VCARD`)[0].name.length, 80, 'a name is cut to 80 characters');
+  assert.ok(Date.now() - started < 5000, `hostile files parse in linear time (took ${Date.now() - started} ms)`);
 
   // ── 4. Merge by phone, re-import no-op, skips ──
   const u = mkUser('Importer');
@@ -308,6 +339,20 @@ async function main() {
   assert.equal((await people.listPeople(legacy, { search: '9100000042' })).items[0].name, 'Contact 042', 'search by number');
   assert.equal((await people.listPeople(legacy, { family: true })).meta.total, LEGACY_LIST.length + 0, 'the family filter lists only family');
 
+  // "Add as family" on a payment whose number belongs to someone imported from the phone book: they become family
+  // under the name typed, and the phone-book name does NOT become a statement name the Family rules match.
+  const promo = mkUser('Promotion');
+  await people.importContacts(promo, Buffer.from(card('Chintu Office', ['9450000001'])));
+  const promoTx = addTx(promo, 'WDL TFR UPI/DR/123456789012/C KUMAR/SBIN/9450000001@ybl/Sent');
+  const promoted = await people.addFamilyFromTransaction(promo, { transactionId: promoTx, name: 'Chintu', phone: '9450000001', relationship: 'Brother', aliases: [] });
+  assert.deepEqual([promoted.name, promoted.isFamily, promoted.aliases, promoted.phones], ['Chintu', true, ['C KUMAR'], ['9450000001']]);
+  assert.equal((await people.listPeople(promo, {})).meta.total, 1, 'the imported person was promoted, not duplicated');
+  assert.equal(familyPolicy(db, promo).matches(upi('CHINTU OFFICE')), false, 'the phone-book name is not a family statement name');
+  assert.equal(familyPolicy(db, promo).matches(upi('C KUMAR')), true);
+  const full = await people.createPerson(promo, { name: 'Many Numbers', phones: Array.from({ length: 10 }, (_, i) => `946000000${i}`), relationship: '', aliases: [], isFamily: true });
+  await assert.rejects(() => people.addFamilyFromTransaction(promo, { transactionId: promoTx, name: 'Many Numbers', phone: '9470000001', relationship: '', aliases: [] }), { code: 'PHONE_LIMIT' });
+  assert.equal((await people.getPerson(promo, full._id)).phones.length, 10);
+
   // ── 6. Labels, "Who is this?" and the person filter ──
   const x = mkUser('Labels');
   const y = mkUser('Labels other tenant');
@@ -351,6 +396,18 @@ async function main() {
   assert.equal((await label(txPayee1)).name, 'Priya', 'clearing one payment leaves what another taught');
   await people.linkTransaction(x, txPayee2, null);
   assert.equal(await label(txPayee1), undefined);
+  // Re-linking a payment that another payment's payee link labels teaches this payment's own UPI id and leaves
+  // the other payment's label alone.
+  const txNeft = addTx(x, 'IMPS/P2A/123456/SHARED NAME/SBIN', { date: '2026-10-29' });
+  const txSameName = addTx(x, upi('SHARED NAME', 'shared@okhdfc'), { date: '2026-10-28' });
+  await people.linkTransaction(x, txNeft, priya._id);
+  assert.deepEqual([(await label(txNeft)).name, (await label(txSameName)).name], ['Priya', 'Priya'], 'a linked payee name labels the same name elsewhere');
+  await people.linkTransaction(x, txSameName, ramesh._id);
+  assert.deepEqual([(await label(txNeft)).name, (await label(txSameName)).name], ['Priya', 'Ramesh Plumber'], 're-linking one payment does not unlabel the other');
+  await people.linkTransaction(x, txSameName, null);
+  assert.equal((await label(txSameName)).name, 'Priya', 'clearing the UPI id link falls back to the payee link');
+  await people.linkTransaction(x, txSameName, null);
+  assert.deepEqual([await label(txNeft), await label(txSameName)], [undefined, undefined], 'clearing again removes the payee link that was labelling it');
   // A hand link outranks the phone number; clearing it falls back.
   await people.linkTransaction(x, txPhone, priya._id);
   assert.equal((await label(txPhone)).name, 'Priya');

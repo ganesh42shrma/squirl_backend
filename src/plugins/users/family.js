@@ -5,6 +5,8 @@ const normalizeName = (value) => String(value || '').normalize('NFKC').toUpperCa
 
 // The people marked as family: the ONLY people the Family category ever looks at. Other people in the circle,
 // and the UPI ids / payee names a person linked to someone by hand, are labels and never feed this.
+const aliasesOf = (text) => { try { const a = JSON.parse(text || '[]'); return Array.isArray(a) ? a : []; } catch { return []; } };
+
 function familyMembers(db, userId) {
   const phones = new Map();
   for (const row of db.prepare('SELECT person_id, phone FROM person_phones WHERE user_id = ? AND person_id IN (SELECT id FROM active_people WHERE user_id = ? AND is_family = 1)').all(userId, userId)) {
@@ -12,7 +14,7 @@ function familyMembers(db, userId) {
     phones.get(row.person_id).push(row.phone);
   }
   return db.prepare('SELECT id, name, aliases FROM active_people WHERE user_id = ? AND is_family = 1 ORDER BY rowid').all(userId)
-    .map((p) => ({ name: p.name, aliases: JSON.parse(p.aliases || '[]'), phones: phones.get(p.id) || [] }));
+    .map((p) => ({ name: p.name, aliases: aliasesOf(p.aliases), phones: phones.get(p.id) || [] }));
 }
 
 function familyPolicy(db, userId) {

@@ -181,11 +181,15 @@ async function addFamilyFromTransaction(userId, { transactionId, ...member }) {
       : withPhones(db, userId, db.prepare('SELECT * FROM active_people WHERE user_id = ? AND is_family = 1').all(userId))
         .find((p) => [p.name, ...p.aliases].some((n) => normalizeName(n) === normalizeName(member.name))) || null;
     existingId = existing?._id || null;
-    const names = [existing?.name, ...(existing?.aliases || []), ...(member.aliases || []), candidate.name].filter(Boolean);
+    // Someone already family keeps their earlier names as aliases, as before. Someone only in the phone book does
+    // not: the name they were saved under there was never a statement name, and must not start matching payments.
+    const earlier = existing?.isFamily ? [existing.name, ...existing.aliases] : [];
+    const names = [...earlier, ...(member.aliases || []), candidate.name].filter(Boolean);
     const aliases = [...new Map(names.filter((n) => normalizeName(n) !== normalizeName(member.name)).map((n) => [normalizeName(n), n])).values()];
     if (aliases.length > MAX_ALIASES) throw AppError.badRequest('This member has too many alternate names. Edit them in Your circle.');
     const relationship = member.relationship || existing?.relationship || '';
     const phones = [...new Set([...(existing?.phones || []), ...(phone ? [phone] : [])])];
+    if (phones.length > MAX_PHONES) throw AppError.badRequest(`A person can have up to ${MAX_PHONES} numbers. Remove one in Your circle first.`, 'PHONE_LIMIT');
     if (!existing?.isFamily) assertFamilyRoom(db, userId, existingId);
     if (existing) {
       assertPhonesFree(db, userId, existingId, phones);
@@ -261,11 +265,15 @@ async function linkTransaction(userId, transactionId, personId) {
     const tx = db.prepare('SELECT id, description FROM active_transactions WHERE id = ? AND user_id = ?').get(transactionId, userId);
     if (!tx) throw AppError.notFound('Transaction not found');
     const keys = linkKeys(tx.description);
-    // Whatever labels this row by hand-linked id goes, along with anything this payment taught earlier.
+    // Anything this payment taught earlier goes. Clearing also removes the hand-linked id that labels the row now
+    // (whichever payment taught it). Re-linking leaves that one alone unless it is the very id being re-linked
+    // (the insert below then moves it): a payee name linked from another payment keeps labelling that payment.
     const labelled = labeler(db, userId).explain(tx.description);
     db.prepare('DELETE FROM person_identifiers WHERE user_id = ? AND transaction_id = ?').run(userId, tx.id);
-    if (labelled?.via === 'link') db.prepare('DELETE FROM person_identifiers WHERE user_id = ? AND kind = ? AND value = ?').run(userId, labelled.kind, labelled.value);
-    if (!personId) return;
+    if (!personId) {
+      if (labelled?.via === 'link') db.prepare('DELETE FROM person_identifiers WHERE user_id = ? AND kind = ? AND value = ?').run(userId, labelled.kind, labelled.value);
+      return;
+    }
     if (!db.prepare('SELECT 1 FROM active_people WHERE id = ? AND user_id = ?').get(personId, userId)) throw AppError.notFound('Person not found');
     const [kind, value] = keys.vpa ? ['vpa', keys.vpa] : keys.payee ? ['payee', keys.payee] : [];
     if (!kind) throw AppError.badRequest('This payment has no UPI id or payee name Squirl can recognise, so it can’t be linked to someone.', 'NOTHING_TO_LINK');
