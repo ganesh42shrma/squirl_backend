@@ -45,7 +45,6 @@ const dashboardConfig = z.union([dashboardConfigV1, dashboardConfigV2]);
 const updateProfile = z.object({
   body: z.object({
     name: name.optional(), email: email.optional(),
-    familyContacts: z.array(familyContact).max(200).optional(),
     dashboardConfig: dashboardConfig.optional(),
   }).refine((b) => Object.keys(b).length > 0, 'Nothing to update'),
 });

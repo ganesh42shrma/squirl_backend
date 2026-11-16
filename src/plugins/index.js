@@ -11,6 +11,7 @@ router.use('/sms', require('./sms/sms.routes').ingestRouter);
 // Everything below needs a signed-in user; services scope every query to req.user.id.
 router.use(requireAuth);
 router.use('/users', require('./users/user.routes'));
+router.use('/people', require('./people/people.routes'));
 router.use('/categories', require('./categories/category.routes'));
 router.use('/tags', require('./tags/tag.routes'));
 router.use('/transactions', require('./transactions/transaction.routes'));

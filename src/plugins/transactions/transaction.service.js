@@ -5,12 +5,15 @@ const { nowIso, placeholders, updateRow } = require('../../core/sql');
 const { SELECT_TRANSACTIONS, withTags, addTags, getTags, insertTransaction, toColumnChanges } = require('./transaction.model');
 const { buildFilter, buildSort, buildSummaryQuery, toSummaryRow } = require('./transaction.helper');
 const { learn } = require('../rules/rules.service');
+const people = require('../people/people.service');
 
 // Filtering by a category also matches its subcategories.
 async function buildQueryFilter(userId, query) {
   const hasCategory = query.category && query.category !== 'none';
   const categoryIds = hasCategory ? await getCategoryFamilyIds(userId, query.category) : undefined;
-  return buildFilter(userId, query, categoryIds);
+  // A person who is gone (or isn't this account's) simply matches nothing.
+  const personIds = query.person ? people.transactionIdsFor(getDb(), userId, query.person) : undefined;
+  return buildFilter(userId, query, categoryIds, personIds);
 }
 
 // A category id must belong to this account: another account's id is "not found", never attachable.
@@ -148,6 +151,12 @@ async function bulkUpdateTransactions(userId, ids, { category, tags, addTags: to
   })();
 }
 
+// "Who is this?": works for any source, because it stores nothing on the transaction itself.
+async function linkPerson(userId, id, personId) {
+  await people.linkTransaction(userId, id, personId);
+  return findById(userId, id);
+}
+
 async function deleteTransaction(userId, id) {
   const deleted = findById(userId, id);
   if (!deleted) throw AppError.notFound('Transaction not found');
@@ -164,5 +173,6 @@ module.exports = {
   bulkCreateTransactions,
   updateTransaction,
   bulkUpdateTransactions,
+  linkPerson,
   deleteTransaction,
 };

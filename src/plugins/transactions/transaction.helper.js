@@ -18,10 +18,11 @@ const SORT_COLUMNS = {
 /**
  * Builds a SQL WHERE clause (on alias `t`) from list/summary query params, always scoped to
  * `userId` first: there is no way to build a filter that reads another account's rows.
- * `categoryIds` is the requested category plus its subcategories (resolved by the service).
+ * `categoryIds` is the requested category plus its subcategories (resolved by the service); `personIds` are the
+ * payments with the requested person (also resolved by the service, from the same matching the labels use).
  * Values always go in `params`; only fixed SQL text is concatenated.
  */
-function buildFilter(userId, query = {}, categoryIds) {
+function buildFilter(userId, query = {}, categoryIds, personIds) {
   if (!userId) throw new Error('buildFilter needs a userId');
   const clauses = [];
   const params = [];
@@ -45,6 +46,9 @@ function buildFilter(userId, query = {}, categoryIds) {
 
   if (query.category === 'none') add('t.category_id IS NULL');
   else if (categoryIds?.length) add(`t.category_id IN (${placeholders(categoryIds)})`, ...categoryIds);
+
+  // One JSON parameter instead of thousands of placeholders.
+  if (personIds) add('t.id IN (SELECT value FROM json_each(?))', JSON.stringify(personIds));
 
   if (query.minAmount !== undefined) add('t.amount_paise >= ?', toPaise(query.minAmount));
   if (query.maxAmount !== undefined) add('t.amount_paise <= ?', toPaise(query.maxAmount));

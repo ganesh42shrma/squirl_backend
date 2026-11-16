@@ -9,7 +9,8 @@ function normalizePhone(value) {
   return /^[6-9]\d{9}$/.test(digits) ? digits : null;
 }
 
-function upiPhones(description) {
+// The UPI id(s) a bank row names: SBI's "UPI/DR/ref/name/bank/handle/remark" and Kotak's "UPI/handle/...".
+function upiHandles(description) {
   const raw = String(description || '').replace(/^(WDL|DEP)\s+TFR\s+/i, '').trim();
   const parts = raw.split('/').map((p) => p.trim());
   if (parts[0]?.toUpperCase() !== 'UPI') return [];
@@ -22,7 +23,11 @@ function upiPhones(description) {
     // Kotak sometimes puts the VPA itself in the counterparty field.
     candidates.push(parts[1]);
   }
-  return candidates.map((value) => normalizePhone(String(value || '').split('@')[0])).filter(Boolean);
+  return candidates;
+}
+
+function upiPhones(description) {
+  return upiHandles(description).map((value) => normalizePhone(String(value || '').split('@')[0])).filter(Boolean);
 }
 
 function memberCandidate(description) {
@@ -34,4 +39,14 @@ function memberCandidate(description) {
   };
 }
 
-module.exports = { normalizePhone, upiPhones, memberCandidate };
+// What "Who is this?" can remember about a payment: its UPI id, else the payee name. Both are normalised so the
+// same person written slightly differently by the bank still matches. Empty strings mean "nothing to link".
+const VPA = /^[a-z0-9._-]{2,64}(@[a-z0-9.-]{2,40})?$/;
+function linkKeys(description) {
+  const { normalizeName } = require('./family');
+  const vpa = upiHandles(description).map((v) => String(v || '').replace(/\s/g, '').toLowerCase()).find((v) => VPA.test(v)) || '';
+  const payee = normalizeName(memberCandidate(description).name);
+  return { vpa, payee: payee.length >= 3 ? payee : '' };
+}
+
+module.exports = { normalizePhone, upiPhones, upiHandles, memberCandidate, linkKeys };

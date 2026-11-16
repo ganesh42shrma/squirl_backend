@@ -39,4 +39,18 @@ function uploadImage(req, res, next) {
   });
 }
 
-module.exports = { uploadPdf, uploadImage };
+// A phone-book export (.vcf), read in memory and never stored. Phones label the file differently (text/vcard,
+// text/x-vcard, text/plain, or nothing), so only the size is checked here; the contents are checked by the parser.
+const MAX_VCF_BYTES = 20 * 1024 * 1024; // exports that carry contact photos get big
+const vcfParser = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_VCF_BYTES, files: 1, fields: 2, parts: 4 } }).single('file');
+
+function uploadVcf(req, res, next) {
+  vcfParser(req, res, (err) => {
+    if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+      return next(new AppError(`That file is too big. The limit is ${MAX_VCF_BYTES / (1024 * 1024)} MB.`, 413, 'FILE_TOO_LARGE'));
+    }
+    next(err);
+  });
+}
+
+module.exports = { uploadPdf, uploadImage, uploadVcf };

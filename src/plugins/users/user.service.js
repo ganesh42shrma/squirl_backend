@@ -5,10 +5,7 @@ const { nowIso, updateRow } = require('../../core/sql');
 const { hashPassword, verifyPassword } = require('../../core/password');
 const { toUser, insertUser } = require('./user.model');
 const { seedDefaults, adoptUnowned } = require('./defaults');
-const { contactsFor, normalizeName, familyPolicy } = require('./family');
-const familyWorker = require('./family.worker');
-const { normalizePhone, memberCandidate } = require('./contact.helper');
-const { insertCategory } = require('../categories/category.model');
+const people = require('../people/people.service');
 const media = require('../media/media.service');
 
 const findRow = (id) => getDb().prepare('SELECT * FROM users WHERE id = ?').get(id);
@@ -40,10 +37,10 @@ async function getProfile(userId) {
   if (!user) throw AppError.notFound('Account not found');
   const db = getDb();
   const count = (table) => db.prepare(`SELECT count(*) FROM active_${table} WHERE user_id = ?`).pluck().get(userId);
-  return { ...user, dashboardConfig: JSON.parse(findRow(userId).dashboard_config || 'null'), familyContacts: contactsFor(db, userId), stats: { transactions: count('transactions'), imports: count('imports'), categories: count('categories') } };
+  return { ...user, dashboardConfig: JSON.parse(findRow(userId).dashboard_config || 'null'), stats: { transactions: count('transactions'), imports: count('imports'), categories: count('categories') } };
 }
 
-async function updateProfile(userId, { name, email, familyContacts, dashboardConfig }) {
+async function updateProfile(userId, { name, email, dashboardConfig }) {
   if (email) {
     const other = findByEmail(email);
     if (other && other.id !== userId) throw AppError.conflict('An account with this email already exists', 'EMAIL_TAKEN');
@@ -52,51 +49,13 @@ async function updateProfile(userId, { name, email, familyContacts, dashboardCon
   if (name !== undefined) changes.name = name;
   if (email !== undefined) changes.email = email;
   if (dashboardConfig !== undefined) changes.dashboard_config = JSON.stringify(dashboardConfig);
-  const db = getDb();
-  db.transaction(() => {
-    updateRow(db, 'users', userId, changes);
-    if (familyContacts !== undefined) saveContacts(db, userId, familyContacts);
-  })();
-  if (familyContacts !== undefined) familyWorker.nudge();
+  updateRow(getDb(), 'users', userId, changes);
   return getProfile(userId);
 }
 
-function saveContacts(db, userId, contacts) {
-  for (const category of ['Family', 'Other']) {
-    if (!db.prepare('SELECT id FROM active_categories WHERE user_id = ? AND lower(name) = ? AND type = ? AND (? = 0 OR parent_id IS NULL)').get(userId, category.toLowerCase(), 'expense', category === 'Family' ? 1 : 0)) {
-      insertCategory(db, userId, { name: category, type: 'expense' });
-    }
-  }
-  updateRow(db, 'users', userId, { family_contacts: JSON.stringify(contacts), updated_at: nowIso() });
-  familyWorker.enqueue(db, userId);
-}
-
-async function addFamilyMember(userId, { transactionId, ...member }) {
-  const db = getDb();
-  db.transaction(() => {
-    const tx = db.prepare('SELECT id, description FROM active_transactions WHERE id = ? AND user_id = ?').get(transactionId, userId);
-    if (!tx) throw AppError.notFound('Transaction not found');
-    const contacts = contactsFor(db, userId);
-    const candidate = memberCandidate(tx.description);
-    const index = contacts.findIndex((c) =>
-      (member.phone && normalizePhone(c.phone) === normalizePhone(member.phone)) ||
-      [c.name, ...(c.aliases || [])].some((n) => normalizeName(n) === normalizeName(member.name)));
-    const existing = index >= 0 ? contacts[index] : null;
-    const names = [existing?.name, ...(existing?.aliases || []), ...(member.aliases || []), candidate.name].filter(Boolean);
-    const aliases = [...new Map(names.filter((n) => normalizeName(n) !== normalizeName(member.name)).map((n) => [normalizeName(n), n])).values()];
-    if (aliases.length > 20) throw AppError.badRequest('This member has too many alternate names. Edit them in Profile.');
-    const saved = { ...member, phone: member.phone || existing?.phone || '', relationship: member.relationship || existing?.relationship || '', aliases };
-    if (index >= 0) contacts[index] = saved;
-    else {
-      if (contacts.length >= 200) throw AppError.badRequest('You can save up to 200 family members and friends.');
-      contacts.push(saved);
-    }
-    saveContacts(db, userId, contacts);
-    // This row is an explicit choice, even if it had a confirmed category before.
-    db.prepare('UPDATE transactions SET category_id = ?, auto_categorized = 0, updated_at = ? WHERE deleted_at IS NULL AND id = ? AND user_id = ?').run(familyPolicy(db, userId).familyId, nowIso(), tx.id, userId);
-  })();
-  familyWorker.nudge();
-  return getProfile(userId);
+// The ledger shortcut "add to family" now saves into Your circle (see people.service).
+async function addFamilyMember(userId, body) {
+  return people.addFamilyFromTransaction(userId, body);
 }
 
 async function assertPassword(userId, password) {
@@ -128,6 +87,7 @@ async function deleteAccount(userId, { password }) {
       'DELETE FROM attachments WHERE user_id = ?',
       'DELETE FROM media WHERE user_id = ?',
       'DELETE FROM goals WHERE user_id = ?', // goal contributions and analyses cascade
+      'DELETE FROM people WHERE user_id = ?', // their numbers and linked ids cascade
       'DELETE FROM transactions WHERE user_id = ?', // transaction_tags cascade
       'DELETE FROM merchant_rules WHERE user_id = ?',
       'DELETE FROM merchant_suggestions WHERE user_id = ?',
@@ -156,6 +116,7 @@ async function resetFinancialData(userId) {
     for (const table of ['captures', 'sms_events', 'sms_accounts', 'goals', 'transactions', 'imports', 'commitments', 'merchant_rules', 'merchant_suggestions', 'categories', 'tags']) {
       archived[table] = db.prepare(`UPDATE ${table} SET deleted_at = ?, updated_at = ? WHERE user_id = ? AND deleted_at IS NULL`).run(now, now, userId).changes;
     }
+    // `people` (Your circle) and its linked ids are deliberately not in the list above: contacts are not financial data.
     seedDefaults(db, userId);
     db.prepare("UPDATE family_sync_jobs SET status = 'cancelled', updated_at = ? WHERE user_id = ?").run(now, userId);
     // "Start fresh" also removes receipt photos on transactions, goals, EMIs & bills and capture inbox notes (the

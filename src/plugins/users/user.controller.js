@@ -25,7 +25,7 @@ async function remove(req, res) {
 }
 
 async function addFamilyMember(req, res) {
-  sendSuccess(res, await service.addFamilyMember(req.user.id, req.body), { message: 'Member saved' });
+  sendSuccess(res, await service.addFamilyMember(req.user.id, req.body), { message: 'Member saved' }); // the saved person
 }
 
 async function resetFinancialData(req, res) {

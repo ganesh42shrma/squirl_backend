@@ -1,5 +1,6 @@
 const { insertRow, newId, nowIso, toPaise, fromPaise, toDateKey, toApiDate, placeholders } = require('../../core/sql');
-const { memberCandidate } = require('../users/contact.helper');
+const { memberCandidate, linkKeys } = require('../users/contact.helper');
+const { labeler } = require('../people/people.service');
 
 const TRANSACTION_TYPES = ['debit', 'credit'];
 const SOURCES = ['manual', 'import', 'sms'];
@@ -31,12 +32,17 @@ function toCategoryRef(row) {
   };
 }
 
-function toTransaction(row, tags = []) {
+function toTransaction(row, tags = [], person = null) {
+  const keys = linkKeys(row.description);
   return {
     _id: row.id,
     date: toApiDate(row.date),
     description: row.description,
     memberCandidate: memberCandidate(row.description),
+    // Label only ("→ Ramesh"): who this payment is with, worked out when read. It never changes the category.
+    person: person || undefined,
+    // Whether "Who is this?" has a UPI id or payee name to remember for this payment.
+    canLinkPerson: Boolean(keys.vpa || keys.payee),
     amount: fromPaise(row.amount_paise),
     type: row.type,
     category: toCategoryRef(row),
@@ -58,16 +64,18 @@ function toTransaction(row, tags = []) {
   };
 }
 
-// Rows from SELECT_TRANSACTIONS → API objects, with their tags loaded in one query.
+// Rows from SELECT_TRANSACTIONS → API objects, with their tags loaded in one query and their people labels
+// resolved from one lookup of the circle (not one per row).
 function withTags(db, rows) {
   if (!rows.length) return [];
+  const people = labeler(db, rows[0].user_id);
   const ids = rows.map((r) => r.id);
   const tagsById = new Map(ids.map((id) => [id, []]));
   const tagRows = db
     .prepare(`SELECT transaction_id, tag FROM transaction_tags WHERE transaction_id IN (${placeholders(ids)}) ORDER BY rowid`)
     .all(...ids);
   for (const { transaction_id: id, tag } of tagRows) tagsById.get(id).push(tag);
-  return rows.map((row) => toTransaction(row, tagsById.get(row.id)));
+  return rows.map((row) => toTransaction(row, tagsById.get(row.id), people.label(row.description)));
 }
 
 function addTags(db, userId, transactionId, tags = []) {

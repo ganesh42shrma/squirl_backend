@@ -51,6 +51,8 @@ const bulkUpdateTransactions = z.object({
 });
 
 const transactionId = z.object({ params: idParams });
+// null clears who this payment is with.
+const linkPerson = z.object({ params: idParams, body: z.object({ personId: entityId.nullable() }) });
 
 const dateString = z.iso.date();
 
@@ -64,6 +66,8 @@ const listTransactions = z.object({
     account: z.string().trim().optional(),
     source: z.enum(SOURCES).optional(),
     importId: entityId.optional(),
+    // Only payments with this person of your circle (same matching as the labels).
+    person: entityId.optional(),
     // Only rows sorted automatically by merchant memory and not yet confirmed.
     auto: z.stringbool().optional(),
     search: z.string().trim().max(100).optional(),
@@ -89,6 +93,7 @@ const summary = z.object({
     // The same filters as the list, so totals can describe exactly the rows being shown.
     source: z.enum(SOURCES).optional(),
     importId: entityId.optional(),
+    person: entityId.optional(),
     auto: z.stringbool().optional(),
     search: z.string().trim().max(100).optional(),
     searchIn: z.enum(SEARCH_SCOPES).optional(),
@@ -105,6 +110,7 @@ module.exports = {
   updateTransaction,
   bulkUpdateTransactions,
   transactionId,
+  linkPerson,
   listTransactions,
   summary,
 };

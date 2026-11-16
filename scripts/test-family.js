@@ -15,13 +15,23 @@ const { seedDefaults } = require('../src/plugins/users/defaults');
 const { insertRow, newId, nowIso } = require('../src/core/sql');
 const { counterparty } = require('../src/plugins/rules/rules.helper');
 const { familyPolicy } = require('../src/plugins/users/family');
-const { updateProfile, getProfile, addFamilyMember } = require('../src/plugins/users/user.service');
+const { addFamilyMember } = require('../src/plugins/users/user.service');
+const people = require('../src/plugins/people/people.service');
+const { insertPerson } = require('../src/plugins/people/people.model');
 const rules = require('../src/plugins/rules/rules.service');
 const suggestions = require('../src/plugins/insights/suggestions.service');
 const familyWorker = require('../src/plugins/users/family.worker');
 const drain = (userId) => { while (familyWorker.runBatch(db, userId, 2)) {} };
-const { updateProfile: schema } = require('../src/plugins/users/user.validation');
+const { createPerson: schema } = require('../src/plugins/people/people.validation');
 const { normalizePhone, upiPhones } = require('../src/plugins/users/contact.helper');
+
+// Family & friends is now the people marked as family. These keep the old "replace the whole list" shape the
+// scenarios below were written for: removing and adding family people queues the same re-sort a list save did.
+const setFamily = async (userId, list) => {
+  for (const p of (await people.listPeople(userId, { family: true, limit: 100 })).items) await people.removePerson(userId, p._id);
+  for (const c of list) await people.createPerson(userId, schema.parse({ body: { ...c, phones: c.phone ? [c.phone] : [], isFamily: true } }).body);
+};
+const familyList = async (userId) => (await people.listPeople(userId, { family: true, limit: 100 })).items;
 
 const user = () => {
   const id = insertUser(db, { email: `${newId()}@example.invalid`, name: 'Test', passwordHash: 'unused' });
@@ -42,17 +52,18 @@ const transaction = (userId, description, cat = null, auto = 0) => {
 const row = (id) => db.prepare('SELECT * FROM transactions WHERE id = ?').get(id);
 
 async function main() {
-  assert.equal(schema.safeParse({ body: { familyContacts: [{ name: '' }] } }).success, false);
-  assert.equal(schema.safeParse({ body: { familyContacts: [{ name: 'Test', aliases: [''] }] } }).success, false);
-  assert.equal(schema.safeParse({ body: { familyContacts: Array(201).fill({ name: 'Test' }) } }).success, false);
+  assert.equal(schema.safeParse({ body: { name: '' } }).success, false);
+  assert.equal(schema.safeParse({ body: { name: 'Test', aliases: [''] } }).success, false);
+  await assert.rejects(async () => { for (let i = 0; i < 201; i += 1) await people.createPerson(b, { name: `Cap ${i}`, phones: [], relationship: '', aliases: [], isFamily: true }); }, /up to 200/);
+  await setFamily(b, []); // the cap check above filled this account's list
   const matched = transaction(a, known);
   const unlisted = transaction(a, stranger);
   const confirmed = transaction(a, known, category('Food & Drinks'));
   const otherUser = transaction(b, known);
-  await updateProfile(a, { familyContacts: [{ name: 'Ananya Sharma', aliases: ['Ananya S'] }] });
+  await setFamily(a, [{ name: 'Ananya Sharma', aliases: ['Ananya S'] }]);
   assert.equal(row(matched).category_id, null, 'profile save queues the historical scan');
   drain(a);
-  assert.deepEqual((await getProfile(a)).familyContacts, [{ name: 'Ananya Sharma', aliases: ['Ananya S'] }]);
+  assert.deepEqual((await familyList(a)).map(({ name, aliases }) => ({ name, aliases })), [{ name: 'Ananya Sharma', aliases: ['Ananya S'] }]);
   assert.equal(row(matched).category_id, category('Family'));
   assert.equal(row(matched).auto_categorized, 1);
   assert.equal(row(unlisted).category_id, null);
@@ -94,17 +105,17 @@ async function main() {
   // Phones survive storage and match only complete phone-based counterparty UPI IDs.
   const phoneDescription = 'WDL TFR UPI/DR/123456789012/BANK DISPLAY NAME/SBIN/9000000001@ybl/Sent';
   const phoneRow = transaction(a, phoneDescription);
-  const contacts = schema.parse({ body: { familyContacts: [{ name: 'Ananya Sharma', aliases: ['Ananya S'], phone: '+91 90000 00001', relationship: 'Sister' }] } }).body;
-  assert.equal(contacts.familyContacts[0].phone, '9000000001');
-  await updateProfile(a, contacts);
+  const contacts = schema.parse({ body: { name: 'Ananya Sharma', aliases: ['Ananya S'], phones: ['+91 90000 00001'], relationship: 'Sister', isFamily: true } }).body;
+  assert.deepEqual(contacts.phones, ['9000000001']);
+  await setFamily(a, [{ name: 'Ananya Sharma', aliases: ['Ananya S'], phone: '+91 90000 00001', relationship: 'Sister' }]);
   drain(a);
-  assert.deepEqual((await getProfile(a)).familyContacts, contacts.familyContacts);
+  assert.deepEqual((await familyList(a)).map(({ name, aliases, phones, relationship }) => ({ name, aliases, phones, relationship })), [{ name: 'Ananya Sharma', aliases: ['Ananya S'], phones: ['9000000001'], relationship: 'Sister' }]);
   assert.equal(row(phoneRow).category_id, category('Family'));
   assert.equal(rules.categoryFor(db, a, { description: phoneDescription, type: 'debit' }), category('Family'));
   assert.equal(rules.categoryFor(db, b, { description: phoneDescription, type: 'debit' }), null);
   for (const number of ['9000000001', '+91 90000 00001', '919000000001', '00919000000001', '09000000001']) assert.equal(normalizePhone(number), '9000000001');
-  assert.equal(schema.safeParse({ body: { familyContacts: [{ name: 'Test', phone: '900000000' }] } }).success, false);
-  assert.equal(schema.safeParse({ body: { familyContacts: [{ name: 'Test', phone: 'abc9000000001' }] } }).success, false);
+  assert.equal(schema.safeParse({ body: { name: 'Test', phones: ['900000000'] } }).success, false);
+  assert.equal(schema.safeParse({ body: { name: 'Test', phones: ['abc9000000001'] } }).success, false);
   assert.deepEqual(upiPhones('UPI/9000000001@ybl/SBIN/123456789012/Payment from'), ['9000000001']);
   assert.equal(familyPolicy(db, a).matches('UPI/DR/123456789012/DIFFERENT NAME/SBIN/919000000001@upi/NA'), true);
   for (const d of [
@@ -119,7 +130,7 @@ async function main() {
   assert.equal(familyPolicy(db, a).matches(upi('ANANYA SHARMA')), true, 'name matching still works with a phone saved');
 
   // Removing a contact reverses automatic Family assignments without changing confirmed rows.
-  await updateProfile(a, { familyContacts: [] });
+  await setFamily(a, []);
   drain(a);
   assert.equal(row(matched).category_id, category('Other'));
   assert.equal(row(phoneRow).category_id, category('Other'));
@@ -133,19 +144,20 @@ async function main() {
   const memberInput = require('../src/plugins/users/user.validation').addFamilyMember.parse({ body: { transactionId: selectedRow, name: 'Usual Name', phone: '+91 9000000002', relationship: 'Friend' } }).body;
   const ledgerProfile = await addFamilyMember(a, memberInput);
   drain(a);
-  assert.equal(ledgerProfile.familyContacts.length, 1);
-  assert.deepEqual(ledgerProfile.familyContacts[0].aliases, ['LEDGER BANK NAME']);
-  assert.equal(ledgerProfile.familyContacts[0].relationship, 'Friend');
+  assert.equal((await familyList(a)).length, 1);
+  assert.deepEqual(ledgerProfile.aliases, ['LEDGER BANK NAME']);
+  assert.equal(ledgerProfile.relationship, 'Friend');
+  assert.equal(ledgerProfile.isFamily, true);
   assert.equal(row(selectedRow).category_id, category('Family'));
   assert.equal(row(selectedRow).auto_categorized, 0);
   assert.equal(row(matchingRow).category_id, category('Family'));
   assert.equal(rules.categoryFor(db, a, { description: ledgerDescription, type: 'debit' }), category('Family'));
   await addFamilyMember(a, { ...memberInput, name: 'Updated Name' });
   drain(a);
-  assert.equal((await getProfile(a)).familyContacts.length, 1, 'same phone updates an existing member');
-  const snapshot = (await getProfile(b)).familyContacts;
+  assert.equal((await familyList(a)).length, 1, 'same phone updates an existing member');
+  const snapshot = await familyList(b);
   await assert.rejects(() => addFamilyMember(b, memberInput), /Transaction not found/);
-  assert.deepEqual((await getProfile(b)).familyContacts, snapshot);
+  assert.deepEqual(await familyList(b), snapshot);
   // Checkpoints, reruns and coalesced edits on a scan that spans several batches.
   const c = user();
   const food = db.prepare("SELECT id FROM active_categories WHERE user_id = ? AND name = 'Food & Drinks'").pluck().get(c);
@@ -154,7 +166,7 @@ async function main() {
   db.prepare("UPDATE transactions SET source = 'manual' WHERE id = ?").run(batchRows[1]);
   db.prepare('UPDATE transactions SET deleted_at = ? WHERE id = ?').run(nowIso(), batchRows[6]);
   const unrelated = transaction(c, upi('UNRELATED SHOP'), food);
-  await updateProfile(c, { familyContacts: [{ name: 'Batch Person', aliases: [] }] });
+  await setFamily(c, [{ name: 'Batch Person', aliases: [] }]);
   const checkpoint = familyWorker.statusFor(c);
   db.exec("CREATE TRIGGER fail_family_batch BEFORE UPDATE OF category_id ON transactions WHEN NEW.user_id = '" + c + "' BEGIN SELECT RAISE(ABORT, 'synthetic batch failure'); END");
   assert.throws(() => familyWorker.runBatch(db, c, 2), /synthetic batch failure/);
@@ -168,11 +180,11 @@ async function main() {
   assert.equal(familyWorker.statusFor(c).changed, 6);
   assert.equal(row(batchRows[6]).category_id, food, 'soft-deleted transactions are untouched');
   assert.equal(row(unrelated).category_id, food, 'unmatched categorized transactions stay unchanged');
-  await updateProfile(c, { familyContacts: [{ name: 'Batch Person', aliases: [] }] });
+  await setFamily(c, [{ name: 'Batch Person', aliases: [] }]);
   drain(c);
   assert.equal(familyWorker.statusFor(c).changed, 0, 'rerunning the same list is idempotent');
-  await updateProfile(c, { familyContacts: [{ name: 'Different Person', aliases: [] }] });
-  await updateProfile(c, { familyContacts: [{ name: 'Batch Person', aliases: [] }] });
+  await setFamily(c, [{ name: 'Different Person', aliases: [] }]);
+  await setFamily(c, [{ name: 'Batch Person', aliases: [] }]);
   assert.equal(familyWorker.statusFor(c).processed, 0, 'newer edits restart a pending scan');
   drain(c);
   assert.equal(row(batchRows[0]).category_id, family, 'only the latest contact list is used');
@@ -200,6 +212,7 @@ async function main() {
   const e = user();
   const legacyRow = transaction(e, upi('LEGACY MEMBER'));
   db.prepare('UPDATE users SET family_contacts = ? WHERE id = ?').run(JSON.stringify([{ name: 'Legacy Member', aliases: [] }]), e);
+  insertPerson(db, e, { name: 'Legacy Member', isFamily: true }); // what the v28 migration made of that entry (no re-sort queued)
   assert.equal(familyWorker.statusFor(e).status, 'idle');
   require('../src/config/migrations')[12](db);
   assert.equal(familyWorker.statusFor(e).status, 'pending');

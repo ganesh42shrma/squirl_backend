@@ -32,9 +32,13 @@ async function bulkUpdate(req, res) {
   sendSuccess(res, result, { message: `${result.modified} transaction(s) updated` });
 }
 
+async function linkPerson(req, res) {
+  sendSuccess(res, await service.linkPerson(req.user.id, req.params.id, req.body.personId), { message: 'Saved' });
+}
+
 async function remove(req, res) {
   await service.deleteTransaction(req.user.id, req.params.id);
   sendSuccess(res, null, { message: 'Transaction deleted' });
 }
 
-module.exports = { list, summary, getOne, create, bulkCreate, update, bulkUpdate, remove };
+module.exports = { list, summary, getOne, create, bulkCreate, update, bulkUpdate, linkPerson, remove };

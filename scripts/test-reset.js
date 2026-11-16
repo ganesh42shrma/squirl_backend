@@ -81,8 +81,13 @@ async function main() {
   legacy.close();
   assert.equal(schema.safeParse({ body: {} }).success, false);
   assert.equal(schema.safeParse({ body: { confirmation: 'RESET' } }).success, true);
-  await users.updateProfile(a, { familyContacts: [{ name: 'Known Person', aliases: [], phone: '9000000001', relationship: 'Friend' }] });
+  const people = require('../src/plugins/people/people.service');
+  const known = await people.createPerson(a, { name: 'Known Person', aliases: [], phones: ['9000000001'], relationship: 'Friend', isFamily: true });
+  await people.linkTransaction(a, imported, known._id);
   const profile = await users.getProfile(a);
+  const circleBefore = await people.listPeople(a, { limit: 50 });
+  const identifiersBefore = db.prepare('SELECT * FROM person_identifiers WHERE user_id = ?').all(a);
+  assert.equal(identifiersBefore.length, 1);
   const snapshots = Object.fromEntries(['transactions', 'imports', 'commitments', 'merchant_rules', 'merchant_suggestions', 'categories', 'tags'].map((t) => [t, all(t)]));
   const otherTransactions = all('transactions', b);
   const otherCommitments = all('commitments', b);
@@ -110,7 +115,9 @@ async function main() {
   assert.deepEqual(all('commitments', b), otherCommitments);
   const after = await users.getProfile(a);
   assert.equal(after.name, profile.name); assert.equal(after.email, profile.email);
-  assert.deepEqual(after.familyContacts, profile.familyContacts);
+  // Start fresh keeps the circle: the people, their family flag and numbers, and the ids linked by hand.
+  assert.deepEqual((await people.listPeople(a, { limit: 50 })).items, circleBefore.items);
+  assert.deepEqual(db.prepare('SELECT * FROM person_identifiers WHERE user_id = ?').all(a), identifiersBefore);
   assert.equal(after.stats.transactions, 0); assert.equal(after.stats.imports, 0);
   assert.equal(db.prepare('SELECT count(*) FROM active_categories WHERE user_id = ? AND name = ?').pluck().get(a, 'Custom'), 0);
   assert.ok(active('categories') > 0, 'default categories recreated');

@@ -159,12 +159,12 @@ async function main() {
   const transferCategory = db.prepare('SELECT type FROM categories WHERE id = ?').pluck().get(row(credit.transactionId).category_id);
   assert.equal(transferCategory, 'transfer');
   const familyWorker = require('../src/plugins/users/family.worker');
-  db.prepare('UPDATE users SET family_contacts = ? WHERE id = ?').run(JSON.stringify([{ name: 'SYNTHETIC SHOP', aliases: [] }]), a);
+  const contact = require('../src/plugins/people/people.model').insertPerson(db, a, { name: 'SYNTHETIC SHOP', isFamily: true });
   familyWorker.enqueue(db, a);
   while (familyWorker.runBatch(db, a)) { /* finish the synthetic contact scan */ }
   assert.equal(row(debit.transactionId).category_id, row(credit.transactionId).category_id);
   assert.equal(db.prepare('SELECT type FROM categories WHERE id = ?').pluck().get(row(debit.transactionId).category_id), 'transfer');
-  db.prepare("UPDATE users SET family_contacts = '[]' WHERE id = ?").run(a);
+  db.prepare('UPDATE people SET is_family = 0 WHERE id = ?').run(contact);
   const summary = await transactions.getSummary(a, { groupBy: 'categoryType' });
   assert.equal(summary.groups.find((g) => g.key === 'transfer').debit, 1);
   assert.equal(summary.groups.find((g) => g.key === 'transfer').credit, 1);

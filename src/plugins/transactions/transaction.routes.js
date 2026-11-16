@@ -12,6 +12,7 @@ router.post('/bulk', validate(schemas.bulkCreateTransactions), controller.bulkCr
 router.patch('/bulk', validate(schemas.bulkUpdateTransactions), controller.bulkUpdate);
 router.get('/:id', validate(schemas.transactionId), controller.getOne);
 router.patch('/:id', validate(schemas.updateTransaction), controller.update);
+router.put('/:id/person', validate(schemas.linkPerson), controller.linkPerson);
 router.delete('/:id', validate(schemas.transactionId), controller.remove);
 
 module.exports = router;

@@ -423,7 +423,9 @@ function search(userId, q) {
     .all(userId, pattern).map((c) => ({ kind: 'commitment', id: c.id, title: c.name, type: c.kind, amount: fromPaise(c.amount_paise) }));
   const inbox = db.prepare(`SELECT id, text FROM captures WHERE user_id = ? AND status = 'inbox' AND deleted_at IS NULL AND text LIKE ? ESCAPE '\\' LIMIT 3`)
     .all(userId, pattern).map((c) => ({ kind: 'capture', id: c.id, title: c.text }));
-  return [...taskRows, ...habitRows, ...transactions, ...goals, ...bills, ...inbox];
+  // Contacts are looked up here, on this computer only (never sent to a model); choosing one filters the ledger.
+  const circle = require('../people/people.service').searchPeople(db, userId, q).map((p) => ({ kind: 'person', id: p._id, title: p.name, isFamily: p.isFamily, phones: p.phones.length }));
+  return [...taskRows, ...habitRows, ...circle, ...transactions, ...goals, ...bills, ...inbox];
 }
 
 module.exports = { preview, categorise, commit, undo, listInbox, dismiss, inboxSummary, search, contextFor, INBOX_LIMIT };

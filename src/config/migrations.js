@@ -2,6 +2,8 @@
 // Each is SQL, or a function (conn) => void for data changes that need code.
 // Never edit a migration that has shipped: add a new one to the end instead.
 const { counterparty, isUsableKey } = require('../plugins/rules/rules.helper');
+const { normalizePhone } = require('../plugins/users/contact.helper');
+const { newId } = require('../core/sql');
 
 module.exports = [
   // v1: initial schema
@@ -829,4 +831,70 @@ module.exports = [
   CREATE VIEW active_attachments AS SELECT rowid AS rowid, * FROM attachments WHERE deleted_at IS NULL;
   CREATE VIEW inbox_captures AS SELECT rowid AS rowid, * FROM captures WHERE deleted_at IS NULL AND status = 'inbox';
   `,
+  // v28: "Your circle". Everyone the person knows lives in `people` (names, with their mobile numbers in
+  // `person_phones`); `is_family` marks the ones who were on the old Family & friends list, and ONLY those
+  // feed the Family category (see users/family.js). `person_identifiers` are UPI ids / payee names the person
+  // linked to someone by hand: they only label ledger rows and never touch a category. Each old
+  // `users.family_contacts` entry becomes a family person with the same name, aliases, relationship and
+  // normalised phone, so the Family rules see exactly the names and numbers they saw before. The old column is
+  // left untouched and is no longer read or written: it stays a snapshot an older build can still read if a
+  // deploy is rolled back.
+  (conn) => {
+    conn.exec(`
+    CREATE TABLE people (
+      id           TEXT PRIMARY KEY,
+      user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name         TEXT NOT NULL,
+      is_family    INTEGER NOT NULL DEFAULT 0 CHECK (is_family IN (0, 1)),
+      relationship TEXT NOT NULL DEFAULT '',
+      aliases      TEXT NOT NULL DEFAULT '[]',                 -- JSON array of statement names; used for family matching only
+      source       TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'import')),
+      created_at   TEXT NOT NULL,
+      updated_at   TEXT NOT NULL,
+      deleted_at   TEXT
+    );
+    CREATE INDEX people_user_name ON people (user_id, name COLLATE NOCASE) WHERE deleted_at IS NULL;
+    CREATE INDEX people_family ON people (user_id) WHERE deleted_at IS NULL AND is_family = 1;
+    CREATE VIEW active_people AS SELECT rowid AS rowid, * FROM people WHERE deleted_at IS NULL;
+
+    -- A removed person's numbers are deleted with them, so a plain unique index frees the number again.
+    CREATE TABLE person_phones (
+      person_id  TEXT NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+      user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      phone      TEXT NOT NULL,                                 -- 10-digit Indian mobile (normalizePhone)
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX person_phones_user_phone ON person_phones (user_id, phone);
+    CREATE INDEX person_phones_person ON person_phones (person_id);
+
+    -- transaction_id is the payment the link was made from, so clearing that payment removes what it taught.
+    CREATE TABLE person_identifiers (
+      person_id      TEXT NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+      user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      kind           TEXT NOT NULL CHECK (kind IN ('vpa', 'payee')),
+      value          TEXT NOT NULL,
+      transaction_id TEXT REFERENCES transactions(id) ON DELETE SET NULL,
+      created_at     TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX person_identifiers_value ON person_identifiers (user_id, kind, value);
+    CREATE INDEX person_identifiers_person ON person_identifiers (person_id);
+    CREATE INDEX person_identifiers_transaction ON person_identifiers (transaction_id) WHERE transaction_id IS NOT NULL;
+    `);
+    const now = new Date().toISOString();
+    const addPerson = conn.prepare(`INSERT INTO people (id, user_id, name, is_family, relationship, aliases, source, created_at, updated_at)
+      VALUES (?, ?, ?, 1, ?, ?, 'manual', ?, ?)`);
+    // OR IGNORE: two old entries sharing a number keep it on the first; the set of family numbers is unchanged.
+    const addPhone = conn.prepare('INSERT OR IGNORE INTO person_phones (person_id, user_id, phone, created_at) VALUES (?, ?, ?, ?)');
+    for (const user of conn.prepare('SELECT id, family_contacts FROM users').all()) {
+      let contacts = [];
+      try { contacts = JSON.parse(user.family_contacts || '[]'); } catch { /* unreadable list: nothing to carry over */ }
+      for (const c of Array.isArray(contacts) ? contacts : []) {
+        const id = newId();
+        const aliases = Array.isArray(c.aliases) ? c.aliases.map(String) : [];
+        addPerson.run(id, user.id, String(c.name ?? ''), String(c.relationship || ''), JSON.stringify(aliases), now, now);
+        const phone = normalizePhone(c.phone);
+        if (phone) addPhone.run(id, user.id, phone, now);
+      }
+    }
+  },
 ];
