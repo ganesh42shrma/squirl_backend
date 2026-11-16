@@ -13,9 +13,13 @@ async function remove(req, res) {
   await service.removePerson(req.user.id, req.params.id);
   sendSuccess(res, null, { message: 'Person removed' });
 }
+async function removeMany(req, res) {
+  const result = await service.removeMany(req.user.id, req.body);
+  sendSuccess(res, result, { message: result.removed === 1 ? '1 person removed' : `${result.removed} people removed` });
+}
 async function importContacts(req, res) {
   if (!req.file) throw AppError.badRequest('Choose a contacts file (.vcf) to import', 'FILE_REQUIRED');
   sendSuccess(res, await service.importContacts(req.user.id, req.file.buffer), { message: 'Contacts imported' });
 }
 
-module.exports = { list, getOne, create, update, remove, importContacts };
+module.exports = { list, getOne, create, update, remove, removeMany, importContacts };

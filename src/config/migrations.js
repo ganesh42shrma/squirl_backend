@@ -898,4 +898,36 @@ module.exports = [
       }
     }
   },
+  // v29: streaks with photo proof. A habit can require a photo for each day it is checked in: `habits.require_photo`
+  // (off for every existing habit, so nothing about current streaks changes). A photo for one day is an attachment
+  // owned by the habit with `day` set to that date (NULL for every other kind of attachment). `attachments` is
+  // rebuilt like in v27 (its CHECK must learn 'habit'): same rows in the same order, same ids, indexes and view.
+  (conn) => {
+    conn.exec(`
+    ALTER TABLE habits ADD COLUMN require_photo INTEGER NOT NULL DEFAULT 0 CHECK (require_photo IN (0, 1));
+    DROP VIEW active_habits;
+    CREATE VIEW active_habits AS SELECT rowid AS rowid, * FROM habits WHERE deleted_at IS NULL;
+
+    DROP VIEW active_attachments;
+    CREATE TABLE attachments_v29 (
+      id         TEXT PRIMARY KEY,
+      user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      media_id   TEXT NOT NULL REFERENCES media(id),
+      owner_type TEXT NOT NULL CHECK (owner_type IN ('transaction', 'task', 'goal', 'commitment', 'capture', 'habit')),
+      owner_id   TEXT NOT NULL,
+      day        TEXT,
+      created_at TEXT NOT NULL,
+      deleted_at TEXT
+    );
+    INSERT INTO attachments_v29 (rowid, id, user_id, media_id, owner_type, owner_id, created_at, deleted_at)
+      SELECT rowid, id, user_id, media_id, owner_type, owner_id, created_at, deleted_at FROM attachments ORDER BY rowid;
+    DROP TABLE attachments;
+    ALTER TABLE attachments_v29 RENAME TO attachments;
+    CREATE UNIQUE INDEX attachments_owner_media ON attachments (user_id, owner_type, owner_id, media_id) WHERE deleted_at IS NULL;
+    CREATE INDEX attachments_owner ON attachments (user_id, owner_type, owner_id);
+    CREATE INDEX attachments_owner_day ON attachments (user_id, owner_type, owner_id, day) WHERE deleted_at IS NULL;
+    CREATE INDEX attachments_media ON attachments (media_id) WHERE deleted_at IS NULL;
+    CREATE VIEW active_attachments AS SELECT rowid AS rowid, * FROM attachments WHERE deleted_at IS NULL;
+    `);
+  },
 ];

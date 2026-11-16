@@ -36,6 +36,7 @@ const toAttachment = (row) => ({
   mediaId: row.media_id,
   ownerType: row.owner_type,
   ownerId: row.owner_id,
+  day: row.day ?? undefined,
   mime: row.mime,
   size: row.size_bytes,
   width: row.width,
@@ -43,7 +44,7 @@ const toAttachment = (row) => ({
   createdAt: row.created_at,
 });
 
-const ATTACHMENT_SELECT = `SELECT a.id, a.media_id, a.owner_type, a.owner_id, a.created_at, m.mime, m.size_bytes, m.width, m.height
+const ATTACHMENT_SELECT = `SELECT a.id, a.media_id, a.owner_type, a.owner_id, a.day, a.created_at, m.mime, m.size_bytes, m.width, m.height
   FROM active_attachments a JOIN active_media m ON m.id = a.media_id AND m.user_id = a.user_id`;
 
 // 404 for "no such thing" and "someone else's thing" alike, so ids can't be probed.
@@ -54,15 +55,16 @@ function assertOwner(db, userId, ownerType, ownerId) {
   }
 }
 
-const ownerAttachmentCount = (db, userId, ownerType, ownerId) =>
-  db.prepare('SELECT count(*) FROM active_attachments WHERE user_id = ? AND owner_type = ? AND owner_id = ?').pluck().get(userId, ownerType, ownerId);
+// The limit is per item, and per day for a habit (a daily habit collects a photo every day, for years).
+const ownerAttachmentCount = (db, userId, ownerType, ownerId, day) =>
+  db.prepare('SELECT count(*) FROM active_attachments WHERE user_id = ? AND owner_type = ? AND owner_id = ? AND day IS ?').pluck().get(userId, ownerType, ownerId, day ?? null);
 
-function listAttachments(userId, { ownerType, ownerId }) {
+function listAttachments(userId, { ownerType, ownerId, day }) {
   requireConfigured();
   const db = getDb();
   assertOwner(db, userId, ownerType, ownerId);
-  return db.prepare(`${ATTACHMENT_SELECT} WHERE a.user_id = ? AND a.owner_type = ? AND a.owner_id = ? ORDER BY a.rowid`)
-    .all(userId, ownerType, ownerId).map(toAttachment);
+  return db.prepare(`${ATTACHMENT_SELECT} WHERE a.user_id = ? AND a.owner_type = ? AND a.owner_id = ?${day ? ' AND a.day = ?' : ''} ORDER BY a.rowid`)
+    .all(userId, ownerType, ownerId, ...(day ? [day] : [])).map(toAttachment);
 }
 
 /**
@@ -71,7 +73,7 @@ function listAttachments(userId, { ownerType, ownerId }) {
  * The file is written BEFORE the rows, and removed again if the rows can't be written, so a row never points
  * at a missing file. Everything after the rate limit is synchronous, so two uploads can't interleave.
  */
-function upload(userId, { ownerType, ownerId, buffer }) {
+function upload(userId, { ownerType, ownerId, day, buffer }) {
   const rt = requireConfigured();
   const db = getDb();
 
@@ -88,9 +90,11 @@ function upload(userId, { ownerType, ownerId, buffer }) {
   if (existing) {
     const attached = db.prepare(`${ATTACHMENT_SELECT} WHERE a.user_id = ? AND a.owner_type = ? AND a.owner_id = ? AND a.media_id = ?`)
       .get(userId, ownerType, ownerId, existing.id);
-    if (attached) return { attachment: toAttachment(attached), created: false };
+    if (attached && (attached.day ?? null) === (day ?? null)) return { attachment: toAttachment(attached), created: false };
+    // One picture can't prove two days of the same habit.
+    if (attached) throw AppError.conflict('You already used that photo for another day. Take a new one.', 'MEDIA_ALREADY_USED');
   }
-  if (ownerAttachmentCount(db, userId, ownerType, ownerId) >= rt.maxPerOwner) {
+  if (ownerAttachmentCount(db, userId, ownerType, ownerId, day) >= rt.maxPerOwner) {
     throw AppError.conflict(`You can attach up to ${rt.maxPerOwner} photos here. Remove one to add another.`, 'MEDIA_LIMIT_REACHED');
   }
 
@@ -100,7 +104,7 @@ function upload(userId, { ownerType, ownerId, buffer }) {
     // Same picture, already stored for this account: no new file, no new quota. If its file has gone missing
     // we hold the bytes right now, so put it back.
     if (!rt.store.exists(existing.id)) rt.store.put(existing.id, userId, buffer);
-    insertRow(db, 'attachments', { id: attachmentId, user_id: userId, media_id: existing.id, owner_type: ownerType, owner_id: ownerId, created_at: now });
+    insertRow(db, 'attachments', { id: attachmentId, user_id: userId, media_id: existing.id, owner_type: ownerType, owner_id: ownerId, day: day ?? null, created_at: now });
     return { attachment: toAttachment(db.prepare(`${ATTACHMENT_SELECT} WHERE a.id = ? AND a.user_id = ?`).get(attachmentId, userId)), created: true };
   }
 
@@ -117,7 +121,7 @@ function upload(userId, { ownerType, ownerId, buffer }) {
         id: mediaId, user_id: userId, sha256, mime: info.mime, size_bytes: buffer.length,
         width: info.width, height: info.height, replica_state: rt.s3 ? 'pending' : 'none', created_at: now, updated_at: now,
       });
-      insertRow(db, 'attachments', { id: attachmentId, user_id: userId, media_id: mediaId, owner_type: ownerType, owner_id: ownerId, created_at: now });
+      insertRow(db, 'attachments', { id: attachmentId, user_id: userId, media_id: mediaId, owner_type: ownerType, owner_id: ownerId, day: day ?? null, created_at: now });
     })();
   } catch (err) {
     try { rt.store.remove(mediaId); } catch (cleanup) { logger.warn('Could not remove a photo file after a failed save', { error: cleanup.code || cleanup.name }); }

@@ -129,6 +129,10 @@ function checkIn(ctx, id, { date, kind = 'done', quantity }) {
     db.prepare("INSERT OR IGNORE INTO habit_checkins (id, habit_id, user_id, date, kind, quantity, created_at) VALUES (?, ?, ?, ?, 'skip', NULL, ?)").run(newId(), id, userId, day, now);
   } else {
     if (isDayBased(row) && !isScheduled(row, day)) throw AppError.badRequest('This habit isn’t scheduled that day', 'NOT_SCHEDULED');
+    // A habit that asks for proof counts a day only once a photo for that day is attached.
+    if (row.require_photo && !db.prepare('SELECT 1 FROM active_attachments WHERE user_id = ? AND owner_type = ? AND owner_id = ? AND day = ?').get(userId, 'habit', id, day)) {
+      throw AppError.badRequest('This habit needs a photo before it counts. Add one on the Streaks page, then check in.', 'PHOTO_REQUIRED');
+    }
     const amount = row.target_quantity == null ? null : quantity ?? row.target_quantity;
     db.prepare("DELETE FROM habit_checkins WHERE habit_id = ? AND date = ? AND kind = 'skip'").run(id, day);
     db.prepare(`INSERT INTO habit_checkins (id, habit_id, user_id, date, kind, quantity, created_at) VALUES (?, ?, ?, ?, 'done', ?, ?)

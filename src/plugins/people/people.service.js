@@ -1,6 +1,6 @@
 const { getDb } = require('../../config/db');
 const AppError = require('../../core/AppError');
-const { nowIso } = require('../../core/sql');
+const { nowIso, placeholders } = require('../../core/sql');
 const { insertCategory } = require('../categories/category.model');
 const { normalizeName, familyPolicy } = require('../users/family');
 const familyWorker = require('../users/family.worker');
@@ -24,8 +24,8 @@ async function listPeople(userId, { search, family, page = 1, limit = 50 }) {
   const params = [userId, ...found.params];
   const rows = db.prepare(`SELECT p.* FROM active_people p WHERE ${where} ORDER BY p.name COLLATE NOCASE, p.rowid LIMIT ? OFFSET ?`).all(...params, limit, (page - 1) * limit);
   const total = db.prepare(`SELECT count(*) FROM active_people p WHERE ${where}`).pluck().get(...params);
-  const counts = db.prepare('SELECT count(*) AS circle, ifnull(sum(is_family), 0) AS family FROM active_people WHERE user_id = ?').get(userId);
-  return { items: withPhones(db, userId, rows), meta: { page, limit, total, pages: Math.ceil(total / limit), circle: counts.circle, family: counts.family } };
+  const counts = db.prepare(`SELECT count(*) AS circle, ifnull(sum(is_family), 0) AS family, ifnull(sum(source = 'import' AND is_family = 0), 0) AS imported FROM active_people WHERE user_id = ?`).get(userId);
+  return { items: withPhones(db, userId, rows), meta: { page, limit, total, pages: Math.ceil(total / limit), circle: counts.circle, family: counts.family, imported: counts.imported } };
 }
 
 /** The palette's people results: a few matches, best (alphabetical) first. */
@@ -122,6 +122,39 @@ async function removePerson(userId, id) {
     if (person.isFamily) touchFamily(db, userId);
   })();
   familyWorker.nudge();
+}
+
+/**
+ * Removes many people in one go: either the ones the owner ticked (`ids`), or a whole group (`scope`):
+ *   'imported'  everyone who came from a phone-book import and was never made family,
+ *   'non_family' everyone except family.
+ * Same rules as removing one person (soft delete; their numbers and learned ids go, so labels disappear and the
+ * numbers are free again). Payments and categories are never touched; only if a family person is among them is
+ * the Family re-sort queued, exactly once. Ids that are already gone are ignored, so a retry is harmless.
+ */
+async function removeMany(userId, { ids, scope }) {
+  const db = getDb();
+  let removed = 0;
+  let family = 0;
+  db.transaction(() => {
+    const rows = ids
+      ? db.prepare(`SELECT id, is_family FROM active_people WHERE user_id = ? AND id IN (${placeholders(ids)})`).all(userId, ...ids)
+      : db.prepare(`SELECT id, is_family FROM active_people WHERE user_id = ? AND is_family = 0${scope === 'imported' ? " AND source = 'import'" : ''}`).all(userId);
+    const now = nowIso();
+    const drop = db.prepare('UPDATE people SET deleted_at = ?, updated_at = ? WHERE id = ? AND user_id = ?');
+    const phones = db.prepare('DELETE FROM person_phones WHERE person_id = ? AND user_id = ?');
+    const learned = db.prepare('DELETE FROM person_identifiers WHERE person_id = ? AND user_id = ?');
+    for (const row of rows) {
+      drop.run(now, now, row.id, userId);
+      phones.run(row.id, userId);
+      learned.run(row.id, userId);
+      removed += 1;
+      family += row.is_family;
+    }
+    if (family) touchFamily(db, userId);
+  })();
+  if (family) familyWorker.nudge();
+  return { removed, family };
 }
 
 /**
@@ -284,6 +317,6 @@ async function linkTransaction(userId, transactionId, personId) {
 }
 
 module.exports = {
-  listPeople, searchPeople, getPerson, createPerson, updatePerson, removePerson, importContacts, addFamilyFromTransaction,
+  listPeople, searchPeople, getPerson, createPerson, updatePerson, removePerson, importContacts, addFamilyFromTransaction, removeMany,
   labeler, transactionIdsFor, linkTransaction,
 };

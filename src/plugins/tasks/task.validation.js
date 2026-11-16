@@ -96,6 +96,7 @@ const habitFields = {
   freezeMax: z.number().int().min(0).max(5),
   skipsPerWeek: z.number().int().min(0).max(7),
   inDailyQuest: z.boolean(),
+  requirePhoto: z.boolean(),
 };
 
 const createHabit = z.object({

@@ -1,5 +1,5 @@
 const { z } = require('zod');
-const { idParams, pagination } = require('../../core/schemas');
+const { idParams, pagination, entityId } = require('../../core/schemas');
 const { normalizePhone } = require('../users/contact.helper');
 const { MAX_PHONES, MAX_ALIASES } = require('./people.model');
 
@@ -27,6 +27,13 @@ const updatePerson = z.object({
   body: z.object({ name: name.optional(), phones: person.phones.optional(), relationship: person.relationship.optional(), aliases: person.aliases.optional(), isFamily: person.isFamily.optional() })
     .refine((b) => Object.keys(b).length > 0, 'Nothing to update'),
 });
+// Either the exact people ticked, or one named group: never both, never neither.
+const removePeople = z.object({
+  body: z.object({
+    ids: z.array(entityId).min(1).max(500).transform((ids) => [...new Set(ids)]).optional(),
+    scope: z.enum(['imported', 'non_family']).optional(),
+  }).refine((b) => (b.ids === undefined) !== (b.scope === undefined), 'Choose who to remove'),
+});
 const personId = z.object({ params: idParams });
 
-module.exports = { listPeople, createPerson, updatePerson, personId };
+module.exports = { listPeople, createPerson, updatePerson, personId, removePeople };

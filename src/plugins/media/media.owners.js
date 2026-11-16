@@ -5,6 +5,7 @@ const OWNER_VIEWS = Object.freeze({
   task: 'active_tasks',
   goal: 'active_goals',
   commitment: 'active_commitments',
+  habit: 'active_habits',
   capture: 'inbox_captures',
 });
 const OWNER_TYPES = Object.keys(OWNER_VIEWS);

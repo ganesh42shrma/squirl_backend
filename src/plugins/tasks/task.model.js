@@ -71,6 +71,7 @@ const HABIT_FIELDS = {
   daysMask: 'days_mask', targetPerPeriod: 'target_per_period', everyN: 'every_n', targetQuantity: 'target_quantity',
   unit: 'unit', startDate: 'start_date', freezeMax: 'freeze_max', skipsPerWeek: 'skips_per_week',
   inDailyQuest: ['in_daily_quest', (v) => (v ? 1 : 0)],
+  requirePhoto: ['require_photo', (v) => (v ? 1 : 0)],
 };
 
 function toHabitColumns(data) {
@@ -102,6 +103,7 @@ function toHabit(row, evaluation, days) {
     freezeMax: row.freeze_max,
     skipsPerWeek: row.skips_per_week,
     inDailyQuest: Boolean(row.in_daily_quest),
+    requirePhoto: Boolean(row.require_photo),
     archived: Boolean(row.archived_at),
     currentStreak: row.current_streak,
     longestStreak: row.longest_streak,
